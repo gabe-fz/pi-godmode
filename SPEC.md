@@ -348,28 +348,28 @@ Example:
 ```json
 {
   "schemaVersion": 1,
-  "nucleusPolicy": {
+  "godmodePolicy": {
     "allowedModels": [
-      { "provider": "openai-codex", "model": "HIGH_TIER_MODEL" }
+      { "provider": "openai-codex", "model": "gpt-5.6-sol" }
     ],
-    "minimumThinking": "high"
+    "minimumThinking": "medium"
   },
   "faculties": {
     "eye": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_READ_MODEL",
-      "thinking": "low",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
       "timeoutMs": 900000
     },
     "hand": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_WRITE_MODEL",
-      "thinking": "medium",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
       "timeoutMs": 1800000
     },
     "scale": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_REVIEW_MODEL",
+      "model": "gpt-5.6-terra",
       "thinking": "medium",
       "timeoutMs": 900000
     }
@@ -381,10 +381,10 @@ Rules:
 
 - unknown schema versions fail closed;
 - every provider and model ID is exact and nonempty;
-- Nucleus allowed models are nonempty;
-- the minimum Nucleus thinking level is `medium`, `high`, or `xhigh`;
+- Godmode allowed models are nonempty;
+- the minimum Godmode thinking level is `medium`, `high`, or `xhigh`;
 - each faculty declares one exact model, thinking level, and bounded timeout;
-- faculty models may not reuse a configured Nucleus provider/model tuple;
+- faculty models may not reuse a configured Godmode provider/model tuple;
 - no fallback model is inferred;
 - unavailable models or authentication failures prevent enable or delegation;
 - the installed `pi-subagents` model scope must permit each exact faculty model;
@@ -399,7 +399,7 @@ Enabling is transactional:
 3. Verify compatible `pi-subagents` availability using public RPC `ping`.
 4. Require advertised async spawn, status, acknowledged non-recovering steer, stop, async completion correlation, fleet status, and capability-ceiling support needed by the implementation.
 5. Preserve the exact current Primary model and thinking level.
-6. Select the first available authenticated configured Nucleus model, preferring the current model when eligible.
+6. Select the first available authenticated configured Godmode model, preferring the current model when eligible.
 7. Apply and verify the configured minimum thinking level.
 8. Register Eye, Hand, and Scale through the public runtime-agent API.
 9. Register a session-scoped capability ceiling allowing only the three canonical faculties, their bounded tool union, and no ambient child extensions.
@@ -560,7 +560,7 @@ Architectural boundaries:
 
 ### 18.1 Unit tests
 
-- configuration version, exact model tuples, timeouts, and Nucleus/faculty separation;
+- configuration version, exact model tuples, timeouts, and Godmode/faculty separation;
 - model lease acquisition, candidate failure, verification, and restoration;
 - assignment schema bounds, path traversal rejection, deduplication, and Hand-required fields;
 - Eye/Hand/Scale prompt snapshots and authority boundaries;

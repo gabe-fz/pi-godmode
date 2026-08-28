@@ -26,28 +26,28 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/godmode/config.json`:
 ```json
 {
   "schemaVersion": 1,
-  "nucleusPolicy": {
+  "godmodePolicy": {
     "allowedModels": [
-      { "provider": "openai-codex", "model": "HIGH_TIER_MODEL" }
+      { "provider": "openai-codex", "model": "gpt-5.6-sol" }
     ],
-    "minimumThinking": "high"
+    "minimumThinking": "medium"
   },
   "faculties": {
     "eye": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_READ_MODEL",
-      "thinking": "low",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
       "timeoutMs": 900000
     },
     "hand": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_WRITE_MODEL",
-      "thinking": "medium",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
       "timeoutMs": 1800000
     },
     "scale": {
       "provider": "openai-codex",
-      "model": "ECONOMICAL_REVIEW_MODEL",
+      "model": "gpt-5.6-terra",
       "thinking": "medium",
       "timeoutMs": 900000
     }
@@ -55,7 +55,7 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/godmode/config.json`:
 }
 ```
 
-Every provider/model tuple is exact. There is no inferred fallback. Faculty tuples cannot reuse a Nucleus tuple. All configured models must be authenticated, available, and permitted by the active Pi and pi-subagents model scopes.
+The intended policy is Godmode on Sol at medium effort, Eye and Hand on Luna at xhigh effort, and Scale on Terra at medium effort. Every provider/model tuple is exact. There is no inferred fallback. Faculty tuples cannot reuse a Godmode tuple. All configured models must be authenticated, available, and permitted by the active Pi and pi-subagents model scopes.
 
 ## Use
 

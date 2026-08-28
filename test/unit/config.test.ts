@@ -11,16 +11,16 @@ test("parseConfig fails closed on versions, unknown fields, duplicates, and bad 
   assert.throws(() => parseConfig({ ...validConfig(), schemaVersion: 2 }), /Unsupported/);
   assert.throws(() => parseConfig({ ...validConfig(), surprise: true }), /unknown fields/);
   const duplicate = validConfig();
-  duplicate.nucleusPolicy.allowedModels.push({ ...duplicate.nucleusPolicy.allowedModels[0]! });
+  duplicate.godmodePolicy.allowedModels.push({ ...duplicate.godmodePolicy.allowedModels[0]! });
   assert.throws(() => parseConfig(duplicate), /duplicate/);
   const thinking = validConfig() as unknown as Record<string, any>;
-  thinking.nucleusPolicy.minimumThinking = "low";
+  thinking.godmodePolicy.minimumThinking = "low";
   assert.throws(() => parseConfig(thinking), /medium, high, or xhigh/);
 });
 
-test("parseConfig separates every faculty tuple from Nucleus and bounds timeout", () => {
+test("parseConfig separates every faculty tuple from Godmode and bounds timeout", () => {
   const overlap = validConfig();
-  overlap.faculties.hand = { provider: "primary", model: "high", thinking: "medium", timeoutMs: 1000 };
+  overlap.faculties.hand = { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "medium", timeoutMs: 1000 };
   assert.throws(() => parseConfig(overlap), /may not reuse/);
   const timeout = validConfig();
   timeout.faculties.eye.timeoutMs = 999;

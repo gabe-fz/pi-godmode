@@ -23,7 +23,7 @@ test("runtime registration publishes exact three faculties and disposes idempote
   assert.deepEqual(requests.map((request) => request.name), ["godmode-eye", "godmode-hand", "godmode-scale"]);
   assert.deepEqual(requests[0].definition.tools, FACULTY_TOOLS.eye);
   assert.deepEqual(requests[1].definition.tools, FACULTY_TOOLS.hand);
-  assert.equal(requests[2].definition.model, "child/scale");
+  assert.equal(requests[2].definition.model, "openai-codex/gpt-5.6-terra");
   registrations.forEach((registration) => registration.dispose());
   assert.deepEqual(disposed, ["godmode-eye", "godmode-hand", "godmode-scale"]);
 });
@@ -65,7 +65,7 @@ test("preflight verifies exact identity/model/thinking/tools/cwd/extensions and 
   const seen: any[] = [];
   const api: PreflightApi = { async resolve(input) { seen.push(input); return contractFor(input); } };
   const cwd = mkdtempSync(join(tmpdir(), "godmode-preflight-"));
-  await preflightFaculties({ api, config: validConfig(), cwd, availableModels: [{ provider: "child", id: "eye" }] });
+  await preflightFaculties({ api, config: validConfig(), cwd, availableModels: [{ provider: "openai-codex", id: "gpt-5.6-luna" }] });
   assert.equal(seen.length, 3);
   assert.deepEqual(seen.map((input) => input.agent), Object.values(AGENT_NAMES));
   assert(seen.every((input) => input.context === "fresh"));

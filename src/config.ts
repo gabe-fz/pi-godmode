@@ -6,7 +6,7 @@ import { FACULTIES, THINKING_LEVELS, type FacultyConfig, type GodmodeConfig, typ
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MIN_TIMEOUT_MS = 1_000;
-const NUCLEUS_THINKING = new Set(["medium", "high", "xhigh"]);
+const GODMODE_THINKING = new Set(["medium", "high", "xhigh"]);
 const FACULTY_THINKING = new Set<string>(THINKING_LEVELS);
 
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -51,34 +51,34 @@ function facultyConfig(value: unknown, field: string): FacultyConfig {
 
 export function parseConfig(value: unknown): GodmodeConfig {
   const root = record(value, "config");
-  exactKeys(root, ["schemaVersion", "nucleusPolicy", "faculties"], "config");
+  exactKeys(root, ["schemaVersion", "godmodePolicy", "faculties"], "config");
   if (root.schemaVersion !== 1) throw new Error(`Unsupported Godmode config schemaVersion '${String(root.schemaVersion)}'; expected 1.`);
 
-  const nucleus = record(root.nucleusPolicy, "config.nucleusPolicy");
-  exactKeys(nucleus, ["allowedModels", "minimumThinking"], "config.nucleusPolicy");
-  if (!Array.isArray(nucleus.allowedModels) || nucleus.allowedModels.length === 0 || nucleus.allowedModels.length > 32) {
-    throw new Error("config.nucleusPolicy.allowedModels must contain 1 to 32 exact model tuples.");
+  const godmode = record(root.godmodePolicy, "config.godmodePolicy");
+  exactKeys(godmode, ["allowedModels", "minimumThinking"], "config.godmodePolicy");
+  if (!Array.isArray(godmode.allowedModels) || godmode.allowedModels.length === 0 || godmode.allowedModels.length > 32) {
+    throw new Error("config.godmodePolicy.allowedModels must contain 1 to 32 exact model tuples.");
   }
-  const allowedModels = nucleus.allowedModels.map((entry, index) => modelTuple(entry, `config.nucleusPolicy.allowedModels[${index}]`));
+  const allowedModels = godmode.allowedModels.map((entry, index) => modelTuple(entry, `config.godmodePolicy.allowedModels[${index}]`));
   const tupleKeys = allowedModels.map(({ provider, model }) => `${provider}\0${model}`);
-  if (new Set(tupleKeys).size !== tupleKeys.length) throw new Error("config.nucleusPolicy.allowedModels contains duplicate model tuples.");
-  if (typeof nucleus.minimumThinking !== "string" || !NUCLEUS_THINKING.has(nucleus.minimumThinking)) {
-    throw new Error("config.nucleusPolicy.minimumThinking must be medium, high, or xhigh.");
+  if (new Set(tupleKeys).size !== tupleKeys.length) throw new Error("config.godmodePolicy.allowedModels contains duplicate model tuples.");
+  if (typeof godmode.minimumThinking !== "string" || !GODMODE_THINKING.has(godmode.minimumThinking)) {
+    throw new Error("config.godmodePolicy.minimumThinking must be medium, high, or xhigh.");
   }
 
   const facultiesInput = record(root.faculties, "config.faculties");
   exactKeys(facultiesInput, FACULTIES, "config.faculties");
   const faculties = Object.fromEntries(FACULTIES.map((name) => [name, facultyConfig(facultiesInput[name], `config.faculties.${name}`)])) as GodmodeConfig["faculties"];
-  const nucleusSet = new Set(tupleKeys);
+  const godmodeSet = new Set(tupleKeys);
   for (const name of FACULTIES) {
     const faculty = faculties[name];
-    if (nucleusSet.has(`${faculty.provider}\0${faculty.model}`)) {
-      throw new Error(`config.faculties.${name} may not reuse a Nucleus provider/model tuple.`);
+    if (godmodeSet.has(`${faculty.provider}\0${faculty.model}`)) {
+      throw new Error(`config.faculties.${name} may not reuse a Godmode provider/model tuple.`);
     }
   }
   return {
     schemaVersion: 1,
-    nucleusPolicy: { allowedModels, minimumThinking: nucleus.minimumThinking as GodmodeConfig["nucleusPolicy"]["minimumThinking"] },
+    godmodePolicy: { allowedModels, minimumThinking: godmode.minimumThinking as GodmodeConfig["godmodePolicy"]["minimumThinking"] },
     faculties,
   };
 }

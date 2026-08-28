@@ -49,11 +49,11 @@ function fixture(options: { preflightError?: Error; holdSpawn?: boolean; dropSpa
   bus.dropSpawn = options.dropSpawn ?? false;
   const log = bus.log;
   const old: PiModel = { provider: "old", id: "model" };
-  const nucleus: PiModel = { provider: "primary", id: "high" };
+  const godmodeModel: PiModel = { provider: "openai-codex", id: "gpt-5.6-sol" };
   let model = old;
-  let thinking: "medium" | "high" = "medium";
+  let thinking: "medium" | "high" = "high";
   const host = {
-    findModel: (provider: string, id: string) => [old, nucleus].find((candidate) => candidate.provider === provider && candidate.id === id),
+    findModel: (provider: string, id: string) => [old, godmodeModel].find((candidate) => candidate.provider === provider && candidate.id === id),
     isModelScoped: () => true,
     async setModel(next: PiModel) { log.push(`model:${next.provider}/${next.id}`); model = next; return true; },
     getModel: () => model,
@@ -93,7 +93,7 @@ test("transactional enable, single-slot launch, attention, steer, and exact comp
   const f = fixture({ holdSpawn: true });
   await f.mode.enable();
   assert.equal(f.mode.snapshot.phase, "active");
-  assert.equal(`${f.model().provider}/${f.model().id}`, "primary/high");
+  assert.equal(`${f.model().provider}/${f.model().id}`, "openai-codex/gpt-5.6-sol");
   const first = f.mode.delegate(eye);
   assert.equal(f.mode.snapshot.delegation, "launching");
   await assert.rejects(f.mode.delegate(hand), /Only one/);
@@ -119,7 +119,7 @@ test("Hand stop-and-disable proves terminal state before ordered cleanup and res
   await f.mode.disable({ stopActive: true });
   assert.equal(f.mode.snapshot.phase, "off");
   assert.equal(`${f.model().provider}/${f.model().id}`, "old/model");
-  assert.equal(f.thinking(), "medium");
+  assert.equal(f.thinking(), "high");
   const stop = f.log.indexOf("rpc:stop");
   const status = f.log.indexOf("rpc:status");
   const ceiling = f.log.indexOf("ceiling:dispose");

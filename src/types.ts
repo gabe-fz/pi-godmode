@@ -4,7 +4,7 @@ export type AgentName = `godmode-${Faculty}`;
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-export type NucleusThinking = "medium" | "high" | "xhigh";
+export type GodmodeThinking = "medium" | "high" | "xhigh";
 
 export interface ModelTuple {
   provider: string;
@@ -18,9 +18,9 @@ export interface FacultyConfig extends ModelTuple {
 
 export interface GodmodeConfig {
   schemaVersion: 1;
-  nucleusPolicy: {
+  godmodePolicy: {
     allowedModels: ModelTuple[];
-    minimumThinking: NucleusThinking;
+    minimumThinking: GodmodeThinking;
   };
   faculties: Record<Faculty, FacultyConfig>;
 }

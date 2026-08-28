@@ -38,7 +38,7 @@ export class ModelLease {
     const previousModel = host.getModel();
     if (!previousModel) throw new Error("Cannot enable Godmode without an active Primary model.");
     const previousThinking = host.getThinkingLevel();
-    const configured = config.nucleusPolicy.allowedModels;
+    const configured = config.godmodePolicy.allowedModels;
     const currentKey = tuple(previousModel);
     const ordered = [...configured].sort((left, right) => {
       const leftCurrent = `${left.provider}/${left.model}` === currentKey ? 0 : 1;
@@ -64,14 +64,14 @@ export class ModelLease {
     if (!selected) {
       if (tuple(host.getModel()) !== tuple(previousModel)) await host.setModel(previousModel);
       host.setThinkingLevel(previousThinking);
-      throw new Error(`No configured Nucleus model is available and authenticated. ${failures.join("; ")}`);
+      throw new Error(`No configured Godmode model is available and authenticated. ${failures.join("; ")}`);
     }
 
     try {
-      host.setThinkingLevel(config.nucleusPolicy.minimumThinking);
+      host.setThinkingLevel(config.godmodePolicy.minimumThinking);
       const actualThinking = host.getThinkingLevel();
-      if (actualThinking !== config.nucleusPolicy.minimumThinking) {
-        throw new Error(`Nucleus thinking verification failed: requested ${config.nucleusPolicy.minimumThinking}, host applied ${actualThinking}.`);
+      if (actualThinking !== config.godmodePolicy.minimumThinking) {
+        throw new Error(`Godmode thinking verification failed: requested ${config.godmodePolicy.minimumThinking}, host applied ${actualThinking}.`);
       }
       this.#snapshot = {
         previousModel,

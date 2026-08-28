@@ -34,7 +34,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   const client = new SubagentsClient(pi.events);
   const modelLease = new ModelLease();
   const toolLease = new ActiveToolLease(pi);
-  let verifiedNucleus = new Set<string>();
+  let verifiedGodmodeModels = new Set<string>();
 
   const requireContext = (): ExtensionContext => {
     if (!currentCtx) throw new Error("Godmode has no active Pi session context.");
@@ -48,7 +48,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     isModelScoped(model: PiModel): boolean {
       const scoped = scopedModels(requireContext());
       const inScope = scoped.length === 0 || scoped.some((entry) => entry.model.provider === model.provider && entry.model.id === model.id);
-      return inScope && (verifiedNucleus.size === 0 || verifiedNucleus.has(modelKey(model)));
+      return inScope && (verifiedGodmodeModels.size === 0 || verifiedGodmodeModels.has(modelKey(model)));
     },
     setModel(model: PiModel): Promise<boolean> { return pi.setModel(model as unknown as Parameters<typeof pi.setModel>[0]); },
     getModel(): PiModel | undefined { return requireContext().model as PiModel | undefined; },
@@ -77,15 +77,15 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
         return auth.ok ? undefined : `${key}: authentication failed (${auth.error})`;
       };
-      verifiedNucleus = new Set<string>();
-      const nucleusFailures: string[] = [];
-      for (const tuple of config.nucleusPolicy.allowedModels) {
+      verifiedGodmodeModels = new Set<string>();
+      const godmodeFailures: string[] = [];
+      for (const tuple of config.godmodePolicy.allowedModels) {
         const failure = await check(tuple);
-        if (failure) nucleusFailures.push(failure);
-        else verifiedNucleus.add(`${tuple.provider}/${tuple.model}`);
+        if (failure) godmodeFailures.push(failure);
+        else verifiedGodmodeModels.add(`${tuple.provider}/${tuple.model}`);
       }
-      if (nucleusFailures.length === config.nucleusPolicy.allowedModels.length) {
-        throw new Error(`No configured Nucleus model is available: ${nucleusFailures.join("; ")}.`);
+      if (godmodeFailures.length === config.godmodePolicy.allowedModels.length) {
+        throw new Error(`No configured Godmode model is available: ${godmodeFailures.join("; ")}.`);
       }
       for (const [name, tuple] of Object.entries(config.faculties)) {
         const failure = await check(tuple);
@@ -172,18 +172,18 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   pi.on("model_select", (event) => {
     const config = mode.config;
     if (!config || mode.snapshot.phase !== "active") return;
-    const allowed = config.nucleusPolicy.allowedModels.some((tuple) => tuple.provider === event.model.provider && tuple.model === event.model.id);
+    const allowed = config.godmodePolicy.allowedModels.some((tuple) => tuple.provider === event.model.provider && tuple.model === event.model.id);
     if (!allowed) {
-      mode.markDegraded(`Primary model changed outside the configured Nucleus allowlist to ${event.model.provider}/${event.model.id}.`);
-      currentCtx?.ui.notify("Godmode degraded: Primary model left the Nucleus allowlist. Disable Godmode to restore the lease.", "error");
+      mode.markDegraded(`Primary model changed outside the configured Godmode allowlist to ${event.model.provider}/${event.model.id}.`);
+      currentCtx?.ui.notify("Godmode degraded: Primary model left the Godmode allowlist. Disable Godmode to restore the lease.", "error");
     }
   });
 
   pi.on("thinking_level_select", (event) => {
     const config = mode.config;
     if (!config || mode.snapshot.phase !== "active") return;
-    if (THINKING_RANK[event.level as ThinkingLevel] < THINKING_RANK[config.nucleusPolicy.minimumThinking]) {
-      mode.markDegraded(`Primary thinking changed below configured minimum ${config.nucleusPolicy.minimumThinking}.`);
+    if (THINKING_RANK[event.level as ThinkingLevel] < THINKING_RANK[config.godmodePolicy.minimumThinking]) {
+      mode.markDegraded(`Primary thinking changed below configured minimum ${config.godmodePolicy.minimumThinking}.`);
       currentCtx?.ui.notify("Godmode degraded: Primary thinking fell below the configured minimum.", "error");
     }
   });

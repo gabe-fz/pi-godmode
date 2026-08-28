@@ -51,8 +51,8 @@ test("paths reject lexical traversal, absolute paths, and escaping symlinks", ()
 test("faculty definitions pin exact prompts, tools, models, extensions, and mutation role", () => {
   const config = validConfig();
   const hand = facultyDefinition("hand", config.faculties.hand);
-  assert.equal(hand.model, "child/hand");
-  assert.equal(hand.thinking, "medium");
+  assert.equal(hand.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(hand.thinking, "xhigh");
   assert.deepEqual(hand.tools, ["read", "grep", "find", "ls", "bash", "edit", "write"]);
   assert.deepEqual(hand.extensions, []);
   assert.deepEqual(hand.subagentOnlyExtensions, []);
