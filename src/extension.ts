@@ -101,6 +101,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
         availableModels: ctx.modelRegistry.getAvailable(),
         ...(ctx.model ? { parentModel: { provider: ctx.model.provider, id: ctx.model.id } } : {}),
+        runtimeRegistrationVerified: true,
       });
     },
     acquireTools: () => toolLease.acquire(),

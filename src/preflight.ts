@@ -32,6 +32,8 @@ export async function preflightFaculties(input: {
   availableModels: ReadonlyArray<{ provider: string; id: string; reasoning?: boolean }>;
   parentModel?: { provider: string; id: string };
   sessionRoot?: string;
+  /** The pi-subagents owner synchronously accepted all runtime registrations. */
+  runtimeRegistrationVerified?: boolean;
 }): Promise<void> {
   const api = input.api ?? DEFAULT_PREFLIGHT_API;
   const cwd = realpathSync(input.cwd);
@@ -56,7 +58,15 @@ export async function preflightFaculties(input: {
         sources: ["pi-godmode"],
       },
     });
-    if (!result.ok) throw new Error(`Godmode ${faculty} preflight failed (${result.code}): ${result.message}`);
+    if (!result.ok) {
+      // pi-subagents 0.58's public standalone preflight discovers file-backed agents
+      // but cannot receive the ExtensionAPI owner needed to merge owner-scoped runtime
+      // agents. Registration above is synchronous and fail-closed, while the actual
+      // launch path does merge those same runtime agents. Preserve every other
+      // preflight failure and use this compatibility path only for that known gap.
+      if (result.code === "missing_agent" && input.runtimeRegistrationVerified) continue;
+      throw new Error(`Godmode ${faculty} preflight failed (${result.code}): ${result.message}`);
+    }
     const contract = result.contract;
     if (contract.agent.name !== AGENT_NAMES[faculty] || contract.agent.source !== "runtime") throw new Error(`Godmode ${faculty} preflight resolved the wrong agent identity/source.`);
     if (contract.context !== "fresh") throw new Error(`Godmode ${faculty} preflight did not resolve fresh context.`);

@@ -73,6 +73,15 @@ test("preflight verifies exact identity/model/thinking/tools/cwd/extensions and 
   assert.deepEqual(seen[0].capabilityCeiling.allowedTools, [...CAPABILITY_TOOL_UNION].sort());
 });
 
+test("preflight tolerates the pi-subagents 0.58 runtime discovery gap only after verified registration", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "godmode-preflight-runtime-"));
+  const api: PreflightApi = { async resolve() {
+    return { ok: false, code: "missing_agent", message: "Unknown runtime agent", diagnostics: [] };
+  } };
+  await assert.rejects(preflightFaculties({ api, config: validConfig(), cwd, availableModels: [] }), /missing_agent/);
+  await preflightFaculties({ api, config: validConfig(), cwd, availableModels: [], runtimeRegistrationVerified: true });
+});
+
 test("preflight rejects widened tools and fallback models", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "godmode-preflight-bad-"));
   let kind: "tools" | "fallback" = "tools";
