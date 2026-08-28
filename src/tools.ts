@@ -43,12 +43,13 @@ export function registerGodmodeTools(pi: ExtensionAPI, mode: GodmodeMode): void 
   pi.registerTool({
     name: "godmode_delegate",
     label: "Delegate Divine Faculty",
-    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle. contextFiles and expectedPaths must be relative to the active checkout root (for example, src/tools.ts), never absolute.",
-    promptSnippet: "Delegate bounded reconnaissance to Eye, implementation to Hand, or independent review to Scale; all supplied paths must be checkout-relative",
+    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle. The run completes asynchronously: do not call subagent_wait after launch; completion will be delivered automatically. contextFiles and expectedPaths must be relative to the active checkout root (for example, src/tools.ts), never absolute.",
+    promptSnippet: "Delegate bounded work asynchronously; never follow launch with subagent_wait; all supplied paths must be checkout-relative",
     parameters: DelegateSchema,
     async execute(_toolCallId, params) {
       const result = await mode.delegate(params);
-      return { content: [{ type: "text", text: text(result) }], details: result };
+      const completionNotice = "Faculty launched asynchronously. Do not call subagent_wait or poll; return control and wait for automatic completion delivery.";
+      return { content: [{ type: "text", text: `${text(result)}\n\n${completionNotice}` }], details: result };
     },
   });
 
