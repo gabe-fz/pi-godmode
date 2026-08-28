@@ -1,0 +1,55 @@
+{
+  "name": "pi-godmode",
+  "version": "0.1.0",
+  "description": "A high-authority Pi orchestration mode with constrained Eye, Hand, and Scale faculties",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/extension.ts"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "SPEC.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/unit/*.test.ts test/integration/*.test.ts",
+    "test:unit": "node --experimental-strip-types --test test/unit/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test test/integration/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.80.0",
+    "@earendil-works/pi-coding-agent": "*",
+    "pi-subagents": "^0.58.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.81.0",
+    "@earendil-works/pi-ai": "0.81.0",
+    "@earendil-works/pi-coding-agent": "0.81.0",
+    "@earendil-works/pi-tui": "^0.81.0",
+    "@types/node": "^24.13.0",
+    "pi-subagents": "0.58.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
