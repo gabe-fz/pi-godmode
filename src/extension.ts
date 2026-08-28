@@ -13,10 +13,12 @@ import { SubagentsClient } from "./subagents-client.ts";
 import { registerGodmodeTools } from "./tools.ts";
 import type { GodmodeConfig, ThinkingLevel } from "./types.ts";
 
-export const PRIMARY_GUIDANCE_VERSION = 1;
+export const PRIMARY_GUIDANCE_VERSION = 2;
 export const PRIMARY_GUIDANCE = `Godmode is active. You are the high-tier Primary and the sole planning, decision, orchestration, review, acceptance, and user-facing authority. Do not delegate authority or seek an oracle. Delegate bounded reconnaissance to Eye, implementation to Hand, and independent review to Scale. Only one Divine Faculty may be active.
 
 Give each Faculty a fresh standalone assignment with its goal, approved behavior, starting context, constraints, validation expectations, and escalation rules. Faculties execute; they do not decide product scope, architecture authority, security policy, version control, release actions, or acceptance. Answer material supervisor questions rather than allowing a Faculty to guess.
+
+Faculty runs complete asynchronously. After delegating, do not call subagent_wait or poll with short timeouts; return control and rely on completion delivery. Use godmode_control status only when status is actually needed.
 
 Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, resolve any Scale findings, and only then report the task complete.`;
 
@@ -164,8 +166,9 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
 
   pi.on("tool_call", (event) => {
     const snapshot = mode.snapshot;
-    if ((snapshot.phase === "active" || snapshot.phase === "degraded") && event.toolName === "subagent") {
-      return { block: true, reason: "Godmode replaces arbitrary subagent execution with godmode_delegate." };
+    if (snapshot.phase === "active" || snapshot.phase === "degraded") {
+      if (event.toolName === "subagent") return { block: true, reason: "Godmode replaces arbitrary subagent execution with godmode_delegate." };
+      if (event.toolName === "subagent_wait") return { block: true, reason: "Godmode delivers faculty completion asynchronously; do not poll or wait with subagent_wait." };
     }
     return mutationGuard(event.toolName, snapshot);
   });

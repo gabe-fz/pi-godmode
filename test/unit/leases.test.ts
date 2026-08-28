@@ -43,15 +43,17 @@ test("model lease rolls back candidate and thinking verification failures", asyn
   assert.equal(`${clamped.current().provider}/${clamped.current().id}`, "old/model");
 });
 
-test("active-tool lease removes subagent and conservatively restores owned deltas", () => {
-  let active = ["read", "subagent", "other"];
+test("active-tool lease removes generic subagent execution and waiting, then conservatively restores owned deltas", () => {
+  let active = ["read", "subagent", "subagent_wait", "other"];
   const lease = new ActiveToolLease({ getActiveTools: () => [...active], setActiveTools: (names) => { active = [...names]; } });
   lease.acquire();
   assert(!active.includes("subagent"));
+  assert(!active.includes("subagent_wait"));
   assert(active.includes("godmode_delegate") && active.includes("godmode_control"));
   active.push("new_other_extension_tool");
   lease.release();
   assert(active.includes("subagent"));
+  assert(active.includes("subagent_wait"));
   assert(active.includes("new_other_extension_tool"));
   assert(!active.includes("godmode_delegate") && !active.includes("godmode_control"));
 });

@@ -166,7 +166,7 @@ Feature work, changes spanning multiple implementation files, broad refactors, a
 
 ## 7. Model-facing tools
 
-Godmode tools are registered at extension load and activated only while the mode is enabled. While enabled, the ordinary model-facing `subagent` execution tool is removed from the active tool set and replaced with the constrained tools below. Package-owned supervisor reply support remains available.
+Godmode tools are registered at extension load and activated only while the mode is enabled. While enabled, the ordinary model-facing `subagent` execution and `subagent_wait` tools are removed from the active tool set and replaced with the constrained tools below. Faculty completion is delivered asynchronously, so the Primary does not poll or wait with short timeouts. Package-owned supervisor reply support remains available.
 
 ### 7.1 `godmode_delegate`
 
@@ -405,7 +405,7 @@ Enabling is transactional:
 9. Register a session-scoped capability ceiling allowing only the three canonical faculties, their bounded tool union, and no ambient child extensions.
 10. Preflight every faculty and verify the exact resolved agent, model candidate, thinking level, tools, cwd policy, extension restrictions, and fresh-context contract.
 11. Save the current active-tool membership that Godmode will change.
-12. Deactivate the ordinary model-facing `subagent` execution surface and activate `godmode_delegate` and `godmode_control` while retaining supervisor response support.
+12. Deactivate the ordinary model-facing `subagent` execution and `subagent_wait` surfaces and activate `godmode_delegate` and `godmode_control` while retaining supervisor response support.
 13. Mark the mode active, add Primary guidance, and update the footer.
 
 Any failure disposes partial registrations and ceilings, restores changed tools, restores the prior model/thinking state, clears the footer, and returns to off.

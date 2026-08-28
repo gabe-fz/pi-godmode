@@ -69,8 +69,8 @@ The TUI opens a toggle dialog. Enabling is transactional: trust, configuration, 
 
 While enabled:
 
-- arbitrary model-facing `subagent` execution is removed and blocked;
-- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context;
+- arbitrary model-facing `subagent` execution and generic `subagent_wait` polling are removed and blocked;
+- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously;
 - `godmode_control` reports, steers, or stops the sole package-owned run;
 - native `subagent_supervisor` behavior remains available for faculty questions;
 - Primary mutation tools are blocked while Hand owns the checkout;
