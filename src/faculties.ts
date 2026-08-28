@@ -110,7 +110,7 @@ function nearestExisting(path: string): string {
 
 export function normalizeCheckoutPath(input: string, cwd: string, field: string): string {
   const value = boundedText(input, field, ITEM_BYTES);
-  if (isAbsolute(value)) throw new Error(`${field} must be checkout-relative.`);
+  if (isAbsolute(value)) throw new Error(`${field} must be checkout-relative (for example, src/tools.ts), not an absolute path.`);
   const canonicalRoot = realpathSync(cwd);
   const absolute = resolve(canonicalRoot, value);
   const lexical = relative(canonicalRoot, absolute);

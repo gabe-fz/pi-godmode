@@ -5,12 +5,23 @@ import type { GodmodeMode } from "./mode.ts";
 import { boundedStatus } from "./status.ts";
 
 const StringList = Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 }));
+const CheckoutPathList = Type.Optional(Type.Array(
+  Type.String({
+    minLength: 1,
+    maxLength: 4096,
+    description: "Path relative to the active checkout root (for example, src/tools.ts); never an absolute path.",
+  }),
+  {
+    maxItems: 64,
+    description: "Paths relative to the active checkout root; absolute paths and paths that escape the checkout are rejected.",
+  },
+));
 export const DelegateSchema = Type.Object({
   faculty: StringEnum(["eye", "hand", "scale"] as const),
   title: Type.String({ minLength: 1, maxLength: 640 }),
   task: Type.String({ minLength: 1, maxLength: 32768 }),
-  contextFiles: StringList,
-  expectedPaths: StringList,
+  contextFiles: CheckoutPathList,
+  expectedPaths: CheckoutPathList,
   acceptanceChecks: StringList,
   constraints: StringList,
 }, { additionalProperties: false });
@@ -32,8 +43,8 @@ export function registerGodmodeTools(pi: ExtensionAPI, mode: GodmodeMode): void 
   pi.registerTool({
     name: "godmode_delegate",
     label: "Delegate Divine Faculty",
-    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle.",
-    promptSnippet: "Delegate bounded reconnaissance to Eye, implementation to Hand, or independent review to Scale",
+    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle. contextFiles and expectedPaths must be relative to the active checkout root (for example, src/tools.ts), never absolute.",
+    promptSnippet: "Delegate bounded reconnaissance to Eye, implementation to Hand, or independent review to Scale; all supplied paths must be checkout-relative",
     parameters: DelegateSchema,
     async execute(_toolCallId, params) {
       const result = await mode.delegate(params);
