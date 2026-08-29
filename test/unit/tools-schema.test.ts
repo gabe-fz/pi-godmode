@@ -27,14 +27,20 @@ test("control schema has no selectable child id and rejects extra fields", () =>
   assert.equal(control.Check({ action: "resume", message: "x" }), false);
 });
 
-test("Primary and control metadata prohibit completion polling and bound status guidance", () => {
+test("Primary and tool metadata prohibit duplicate delegated work and completion polling", () => {
   const extensionSource = readFileSync(new URL("../../src/extension.ts", import.meta.url), "utf8");
   const primaryGuidance = extensionSource.match(/export const PRIMARY_GUIDANCE = `([\s\S]*?)`;/)?.[1];
   assert(primaryGuidance);
   const registered: any[] = [];
   registerGodmodeTools({ registerTool(tool: any) { registered.push(tool); } } as any, {} as any);
+  const delegate = registered.find((tool) => tool.name === "godmode_delegate");
   const control = registered.find((tool) => tool.name === "godmode_control");
+  assert(delegate);
   assert(control);
+  const exactNoDuplicateWork = /After delegation, do not independently repeat or continue the Faculty's assigned work while it is active\./i;
+  for (const guidance of [primaryGuidance, delegate.description, delegate.promptSnippet]) {
+    assert.match(guidance, exactNoDuplicateWork);
+  }
   const exactProhibition = /Never call godmode_control status merely to check whether a queued or running faculty has finished\./i;
   const exactDefault = /Automatic completion delivery is the default\./i;
   const exactExceptions = /Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state\./i;
@@ -45,4 +51,15 @@ test("Primary and control metadata prohibit completion polling and bound status 
     assert.match(guidance, exactExceptions);
     assert.match(guidance, exactTokenWarning);
   }
+});
+
+test("delegate launch notice tells the Primary not to duplicate active Faculty work", async () => {
+  const registered: any[] = [];
+  const mode = {
+    async delegate() { return { runId: "run-1", faculty: "eye", agent: "godmode-eye", state: "running" }; },
+  };
+  registerGodmodeTools({ registerTool(tool: any) { registered.push(tool); } } as any, mode as any);
+  const delegate = registered.find((tool) => tool.name === "godmode_delegate");
+  const result = await delegate.execute("call-1", { faculty: "eye", title: "Inspect", task: "Inspect source" });
+  assert.match(result.content[0].text, /Do not independently repeat or continue the Faculty's assigned work while it is active\./i);
 });

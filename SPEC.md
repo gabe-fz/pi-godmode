@@ -141,6 +141,7 @@ While enabled, the Primary follows these rules:
 - delegate independent post-implementation review to Scale when useful;
 - never use a faculty to decide product intent, architecture authority, security policy, release authority, or acceptance;
 - never edit the checkout concurrently with Hand;
+- after delegation, return control rather than independently repeating or continuing the Faculty's assigned work while it is active, except to answer material supervisor questions or handle an explicit user interruption;
 - treat faculty reports and command claims as evidence;
 - inspect the complete diff and every materially changed file after Hand finishes;
 - independently run the required validation before presenting completion;
@@ -150,7 +151,7 @@ Feature work, changes spanning multiple implementation files, broad refactors, a
 
 ## 7. Model-facing tools
 
-Godmode tools are registered at extension load and activated only while the mode is enabled. While enabled, the ordinary model-facing `subagent` execution and `subagent_wait` tools are removed from the active tool set and replaced with the constrained tools below. Faculty completion is delivered asynchronously, so the Primary does not poll or wait with short timeouts. Package-owned supervisor reply support remains available.
+Godmode tools are registered at extension load and activated only while the mode is enabled. While enabled, the ordinary model-facing `subagent` execution and `subagent_wait` tools are removed from the active tool set and replaced with the constrained tools below. Faculty completion is delivered asynchronously, so after delegation the Primary does not duplicate the active Faculty's assignment, poll, or wait with short timeouts. Package-owned supervisor reply support remains available.
 
 ### 7.1 `godmode_delegate`
 
@@ -638,13 +639,14 @@ The first stable release is ready when:
 8. Exactly one faculty can be active, including under concurrent tool calls and ambiguous lifecycle status.
 9. Primary mutation tools are blocked while Hand is active.
 10. Faculties use fresh standalone assignments and escalate material decisions through native supervisor coordination.
-11. Status, steering, stop, completion, lifecycle artifacts, and FleetView are supplied through documented `pi-subagents` behavior.
-12. Godmode contains no child-process manager, custom cross-process transport, or private `pi-subagents` import.
-13. Hand completion is presented as a handoff, never automatic acceptance.
-14. The Primary inspects actual changes and independently runs required validation before reporting completion.
-15. Stop-and-disable reaches terminal package status before restoring tools and the Primary model.
-16. Unit, fake-owner integration, and real controlled-model tests cover enable, assignment, questions, mutation guard, completion, stop, disable, and restoration.
-17. Documentation clearly describes the same-user trust boundary and the Primary’s final authority.
+11. After delegation, the Primary returns control instead of independently repeating or continuing the active Faculty's assignment.
+12. Status, steering, stop, completion, lifecycle artifacts, and FleetView are supplied through documented `pi-subagents` behavior.
+13. Godmode contains no child-process manager, custom cross-process transport, or private `pi-subagents` import.
+14. Hand completion is presented as a handoff, never automatic acceptance.
+15. The Primary inspects actual changes and independently runs required validation before reporting completion.
+16. Stop-and-disable reaches terminal package status before restoring tools and the Primary model.
+17. Unit, fake-owner integration, and real controlled-model tests cover enable, assignment, questions, mutation guard, completion, stop, disable, and restoration.
+18. Documentation clearly describes the same-user trust boundary and the Primary’s final authority.
 
 ## 21. Stable Primary guidance
 
@@ -653,5 +655,7 @@ The enabled Primary system guidance should remain concise and versioned:
 > Godmode is active. You are the high-tier Primary and the sole planning, decision, orchestration, review, acceptance, and user-facing authority. Do not delegate authority or seek an oracle. Delegate bounded reconnaissance to Eye, implementation to Hand, and independent review to Scale. Only one Divine Faculty may be active.
 >
 > Give each Faculty a fresh standalone assignment with its goal, approved behavior, starting context, constraints, validation expectations, and escalation rules. Faculties execute; they do not decide product scope, architecture authority, security policy, version control, release actions, or acceptance. Answer material supervisor questions rather than allowing a Faculty to guess.
+>
+> Faculty runs complete asynchronously; automatic completion delivery is the default. After delegation, do not independently repeat or continue the Faculty's assigned work while it is active. Return control and wait for automatic completion, except to answer material supervisor questions or handle an explicit user interruption. Never call `godmode_control status` merely to check whether a queued or running faculty has finished. Do not call `subagent_wait` or poll with short timeouts. Use `godmode_control status` only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.
 >
 > Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, resolve any Scale findings, and only then report the task complete.

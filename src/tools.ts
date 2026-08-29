@@ -54,12 +54,12 @@ export function registerGodmodeTools(pi: ExtensionAPI, mode: GodmodeMode): void 
   pi.registerTool({
     name: "godmode_delegate",
     label: "Delegate Divine Faculty",
-    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle. The run completes asynchronously: do not call subagent_wait after launch; completion will be delivered automatically. contextFiles and expectedPaths accept relative paths or absolute paths that resolve inside the active checkout; absolute paths are normalized to checkout-relative form, while outside paths and escaping symlinks are rejected. For Eye and Scale, expectedPaths are safely treated as additional contextFiles rather than mutation scope.",
-    promptSnippet: "Delegate bounded work asynchronously; never follow launch with subagent_wait; paths must resolve within the active checkout; Eye/Scale expectedPaths become contextFiles",
+    description: "Launch exactly one constrained Eye, Hand, or Scale faculty with a fresh bounded assignment. Godmode must be active and idle. The run completes asynchronously: do not call subagent_wait after launch; completion will be delivered automatically. After delegation, do not independently repeat or continue the Faculty's assigned work while it is active. contextFiles and expectedPaths accept relative paths or absolute paths that resolve inside the active checkout; absolute paths are normalized to checkout-relative form, while outside paths and escaping symlinks are rejected. For Eye and Scale, expectedPaths are safely treated as additional contextFiles rather than mutation scope.",
+    promptSnippet: "Delegate bounded work asynchronously. After delegation, do not independently repeat or continue the Faculty's assigned work while it is active. Never follow launch with subagent_wait; paths must resolve within the active checkout; Eye/Scale expectedPaths become contextFiles",
     parameters: DelegateSchema,
     async execute(_toolCallId, params) {
       const result = await mode.delegate(params);
-      const completionNotice = "Faculty launched asynchronously. Do not call subagent_wait or poll; return control and wait for automatic completion delivery.";
+      const completionNotice = "Faculty launched asynchronously. Do not independently repeat or continue the Faculty's assigned work while it is active. Do not call subagent_wait or poll; return control and wait for automatic completion delivery.";
       return { content: [{ type: "text", text: `${text(result)}\n\n${completionNotice}` }], details: result };
     },
   });

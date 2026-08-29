@@ -8,7 +8,7 @@ Godmode promotes the interactive Primary to an allowlisted high-tier model and e
 - **Hand** — bounded implementation in the current checkout;
 - **Scale** — read-only independent review.
 
-The Primary remains the sole planning, decision, review, acceptance, and user-facing authority. Only one faculty can be active at a time. Eye and Scale are read-only: any `expectedPaths` supplied to them are treated as deduplicated context files, not mutation scope.
+The Primary remains the sole planning, decision, review, acceptance, and user-facing authority. Only one faculty can be active at a time. After delegating, the Primary returns control instead of independently repeating or continuing the Faculty's assigned work while it is active. Eye and Scale are read-only: any `expectedPaths` supplied to them are treated as deduplicated context files, not mutation scope.
 
 ## Install
 
