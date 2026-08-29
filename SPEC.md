@@ -192,13 +192,15 @@ Validation rules:
 - `title` is 1–160 characters.
 - `task` is nonempty and bounded to 32 KiB.
 - arrays are bounded, deduplicated, and contain nonempty strings;
-- paths are checkout-relative and cannot traverse outside the active checkout;
+- paths may be checkout-relative or absolute when they resolve within the active checkout; absolute paths are normalized to checkout-relative form, while traversal, outside paths, and escaping symlinks are rejected;
 - `hand` requires nonempty `expectedPaths` and `acceptanceChecks`;
-- `eye` and `scale` reject mutation-oriented instructions and expected mutation paths;
+- `eye` and `scale` reject mutation-oriented instructions; any supplied `expectedPaths` are safely reinterpreted as additional deduplicated `contextFiles` rather than mutation scope;
 - the current Pi project must be trusted;
 - Godmode must be active and healthy;
 - no other faculty may be active;
 - the resolved faculty launch contract must match its configured model, thinking, tools, and extension restrictions.
+
+Absolute paths that resolve within the active checkout are normalized to checkout-relative form before assignment rendering. For Eye and Scale, `expectedPaths` are safely reinterpreted as additional deduplicated `contextFiles`; they do not grant read-only faculties mutation scope.
 
 The extension converts these fields into one compact assignment containing:
 

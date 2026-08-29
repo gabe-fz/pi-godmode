@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Faculty, FacultyConfig, GodmodeConfig, NormalizedDelegation, DelegationInput, AgentName } from "./types.ts";
 
 export const FACULTY_TOOLS: Record<Faculty, readonly string[]> = {
@@ -71,7 +71,7 @@ export function facultyDefinition(faculty: Faculty, config: FacultyConfig): Runt
 const ARRAY_LIMIT = 64;
 const ITEM_BYTES = 4 * 1024;
 const TASK_BYTES = 32 * 1024;
-const MUTATION_DIRECTIVE = /\b(?:write|edit|modify|implement|fix|create|delete|remove|rename|move|add|update|patch|refactor|mutate|format)\b(?:\s+(?:the|a|an|any|this|these|file|code|source|repository|repo|implementation))?/iu;
+const MUTATION_DIRECTIVE = /\b(?:write|edit|modify|implement|fix(?!-now\b)|create|delete|remove|rename|move|add|update|patch|refactor|mutate|format)\b(?:\s+(?:the|a|an|any|this|these|file|code|source|repository|repo|implementation))?/iu;
 const NEGATED_MUTATION = /\b(?:do\s+not|don't|must\s+not|never|without)\b.{0,48}\b(?:write|edit|modify|implement|fix|create|delete|remove|rename|move|add|update|patch|refactor|mutate|format)\b/iu;
 
 function hasMutationDirective(text: string): boolean {
@@ -110,15 +110,24 @@ function nearestExisting(path: string): string {
 
 export function normalizeCheckoutPath(input: string, cwd: string, field: string): string {
   const value = boundedText(input, field, ITEM_BYTES);
-  if (isAbsolute(value)) throw new Error(`${field} must be checkout-relative (for example, src/tools.ts), not an absolute path.`);
+  if (value.split(sep).includes("..")) throw new Error(`${field} contains parent traversal outside the active checkout contract.`);
   const canonicalRoot = realpathSync(cwd);
-  const absolute = resolve(canonicalRoot, value);
+  const absolute = isAbsolute(value) ? resolve(value) : resolve(canonicalRoot, value);
   const lexical = relative(canonicalRoot, absolute);
-  if (lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) throw new Error(`${field} traverses outside the active checkout.`);
+  const lexicalEscapes = lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical);
+  const rawLexical = isAbsolute(value) ? relative(resolve(cwd), absolute) : lexical;
+  const rawLexicalEscapes = rawLexical === ".." || rawLexical.startsWith(`..${sep}`) || isAbsolute(rawLexical);
+  if (lexicalEscapes && !isAbsolute(value)) throw new Error(`${field} traverses outside the active checkout.`);
   const existing = nearestExisting(absolute);
   const canonicalExisting = realpathSync(existing);
   const physical = relative(canonicalRoot, canonicalExisting);
-  if (physical === ".." || physical.startsWith(`..${sep}`) || isAbsolute(physical)) throw new Error(`${field} resolves through a symlink outside the active checkout.`);
+  const physicalEscapes = physical === ".." || physical.startsWith(`..${sep}`) || isAbsolute(physical);
+  if (physicalEscapes) {
+    const beginsInsideCheckout = isAbsolute(value) ? !rawLexicalEscapes : !lexicalEscapes;
+    if (beginsInsideCheckout) throw new Error(`${field} resolves through a symlink outside the active checkout.`);
+    throw new Error(`${field} must resolve within the active checkout; path is outside the active checkout.`);
+  }
+  if (lexicalEscapes) return join(physical, relative(existing, absolute)) || ".";
   return lexical || ".";
 }
 
@@ -127,15 +136,16 @@ export function validateDelegation(input: DelegationInput, cwd: string): Normali
   const title = boundedText(input.title, "title", 640);
   if ([...title].length > 160) throw new Error("title must be at most 160 characters.");
   const task = boundedText(input.task, "task", TASK_BYTES);
-  const contextFiles = [...new Set(normalizeArray(input.contextFiles, "contextFiles").map((entry, index) => normalizeCheckoutPath(entry, cwd, `contextFiles[${index}]`)))];
-  const expectedPaths = [...new Set(normalizeArray(input.expectedPaths, "expectedPaths").map((entry, index) => normalizeCheckoutPath(entry, cwd, `expectedPaths[${index}]`)))];
+  let contextFiles = [...new Set(normalizeArray(input.contextFiles, "contextFiles").map((entry, index) => normalizeCheckoutPath(entry, cwd, `contextFiles[${index}]`)))];
+  let expectedPaths = [...new Set(normalizeArray(input.expectedPaths, "expectedPaths").map((entry, index) => normalizeCheckoutPath(entry, cwd, `expectedPaths[${index}]`)))];
   const acceptanceChecks = normalizeArray(input.acceptanceChecks, "acceptanceChecks");
   const constraints = normalizeArray(input.constraints, "constraints");
   if (input.faculty === "hand") {
     if (!expectedPaths.length) throw new Error("Hand delegation requires nonempty expectedPaths.");
     if (!acceptanceChecks.length) throw new Error("Hand delegation requires nonempty acceptanceChecks.");
   } else {
-    if (expectedPaths.length) throw new Error(`${input.faculty === "eye" ? "Eye" : "Scale"} is read-only and rejects expected mutation paths.`);
+    contextFiles = [...new Set([...contextFiles, ...expectedPaths])];
+    expectedPaths = [];
     const combined = [title, task, ...constraints].join("\n");
     if (hasMutationDirective(combined)) throw new Error(`${input.faculty === "eye" ? "Eye" : "Scale"} rejects mutation-oriented instructions.`);
   }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { FACULTY_PROMPTS, facultyDefinition, renderAssignment, validateDelegation } from "../../src/faculties.ts";
 import { validConfig } from "../fixtures/config.ts";
@@ -19,7 +19,7 @@ test("delegation normalizes arrays, requires Hand scope/checks, and renders stan
     title: " Implement feature ",
     task: "Add bounded behavior.",
     contextFiles: ["src", "src", "./src"],
-    expectedPaths: ["src"],
+    expectedPaths: [join(cwd, "src")],
     acceptanceChecks: ["npm test", "npm test"],
     constraints: ["No dependencies"],
   }, cwd);
@@ -31,21 +31,35 @@ test("delegation normalizes arrays, requires Hand scope/checks, and renders stan
   assert.throws(() => validateDelegation({ faculty: "hand", title: "x", task: "x", expectedPaths: [], acceptanceChecks: [] }, cwd), /expectedPaths/);
 });
 
-test("Eye and Scale reject mutation directives and expected paths", () => {
+test("Eye and Scale reinterpret expected paths as read-only context", () => {
   const cwd = checkout();
   assert.throws(() => validateDelegation({ faculty: "eye", title: "Fix source", task: "Inspect it" }, cwd), /mutation-oriented/);
-  assert.throws(() => validateDelegation({ faculty: "scale", title: "Review", task: "Review behavior", expectedPaths: ["src"] }, cwd), /read-only/);
-  assert.doesNotThrow(() => validateDelegation({ faculty: "scale", title: "Review implementation", task: "Inspect actual source and report findings", constraints: ["Do not edit files"] }, cwd));
+  const eye = validateDelegation({ faculty: "eye", title: "Inspect", task: "Inspect source", contextFiles: ["src"], expectedPaths: ["src", "./src"] }, cwd);
+  assert.deepEqual(eye.contextFiles, ["src"]);
+  assert.deepEqual(eye.expectedPaths, []);
+  const scale = validateDelegation({ faculty: "scale", title: "Review", task: "Review behavior", expectedPaths: [join(cwd, "src"), "src"] }, cwd);
+  assert.deepEqual(scale.contextFiles, ["src"]);
+  assert.deepEqual(scale.expectedPaths, []);
+  assert.doesNotThrow(() => validateDelegation({ faculty: "scale", title: "Review implementation", task: "Inspect actual source and report fix-now findings", constraints: ["Do not edit files"] }, cwd));
 });
 
-test("paths reject lexical traversal, absolute paths, and escaping symlinks", () => {
+test("paths normalize in-checkout absolute paths and reject traversal or escaping symlinks", () => {
   const cwd = checkout();
   const outside = mkdtempSync(join(tmpdir(), "godmode-outside-"));
   symlinkSync(outside, join(cwd, "escape"));
+  symlinkSync(join(cwd, "src"), join(outside, "into-checkout"));
   const base = { faculty: "eye" as const, title: "Inspect", task: "Inspect source" };
-  assert.throws(() => validateDelegation({ ...base, contextFiles: ["../x"] }, cwd), /outside/);
-  assert.throws(() => validateDelegation({ ...base, contextFiles: [outside] }, cwd), /checkout-relative/);
+  const normalized = validateDelegation({ ...base, contextFiles: [join(cwd, "src")], expectedPaths: [join(cwd, "src")] }, cwd);
+  assert.deepEqual(normalized.contextFiles, ["src"]);
+  assert.deepEqual(normalized.expectedPaths, []);
+  const inbound = validateDelegation({ ...base, contextFiles: [join(outside, "into-checkout")] }, cwd);
+  assert.deepEqual(inbound.contextFiles, ["src"]);
+  assert.throws(() => validateDelegation({ ...base, contextFiles: ["../x"] }, cwd), /traversal/);
+  assert.throws(() => validateDelegation({ ...base, contextFiles: [outside] }, cwd), /outside/);
   assert.throws(() => validateDelegation({ ...base, contextFiles: ["escape/file"] }, cwd), /symlink/);
+  assert.throws(() => validateDelegation({ ...base, contextFiles: [join(cwd, "escape/file")] }, cwd), /symlink/);
+  assert.throws(() => validateDelegation({ ...base, contextFiles: ["escape/../src"] }, cwd), /traversal/);
+  assert.throws(() => validateDelegation({ ...base, contextFiles: [`${cwd}${sep}escape${sep}..${sep}src`] }, cwd), /traversal/);
 });
 
 test("faculty definitions pin exact prompts, tools, models, extensions, and mutation role", () => {

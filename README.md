@@ -8,7 +8,7 @@ Godmode promotes the interactive Primary to an allowlisted high-tier model and e
 - **Hand** — bounded implementation in the current checkout;
 - **Scale** — read-only independent review.
 
-The Primary remains the sole planning, decision, review, acceptance, and user-facing authority. Only one faculty can be active at a time.
+The Primary remains the sole planning, decision, review, acceptance, and user-facing authority. Only one faculty can be active at a time. Eye and Scale are read-only: any `expectedPaths` supplied to them are treated as deduplicated context files, not mutation scope.
 
 ## Install
 
@@ -70,7 +70,7 @@ The TUI opens a toggle dialog. Enabling is transactional: trust, configuration, 
 While enabled:
 
 - arbitrary model-facing `subagent` execution and generic `subagent_wait` polling are removed and blocked;
-- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously;
+- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously; supplied paths may be relative or absolute inside the active checkout (absolute paths are normalized to relative form, while outside paths and escaping symlinks are rejected); Eye and Scale safely treat `expectedPaths` as additional context files;
 - `godmode_control` reports, steers, or stops the sole package-owned run;
 - native `subagent_supervisor` behavior remains available for faculty questions;
 - Primary mutation tools are blocked while Hand owns the checkout;
