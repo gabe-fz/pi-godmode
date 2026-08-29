@@ -36,6 +36,9 @@ test("Eye and Scale reinterpret expected paths as read-only context", () => {
   assert.throws(() => validateDelegation({ faculty: "eye", title: "Fix source", task: "Inspect it" }, cwd), /mutation-oriented/);
   const eye = validateDelegation({ faculty: "eye", title: "Inspect", task: "Inspect source", contextFiles: ["src"], expectedPaths: ["src", "./src"] }, cwd);
   assert.deepEqual(eye.contextFiles, ["src"]);
+  // This is read-only reconnaissance, but pi-subagents' generic intent guard
+  // recognizes "make the code changes" as implementation wording.
+  assert.doesNotThrow(() => validateDelegation({ faculty: "eye", title: "Assess change", task: "Assess whether to make the code changes needed to resolve the issue." }, cwd));
   assert.deepEqual(eye.expectedPaths, []);
   const scale = validateDelegation({ faculty: "scale", title: "Review", task: "Review behavior", expectedPaths: [join(cwd, "src"), "src"] }, cwd);
   assert.deepEqual(scale.contextFiles, ["src"]);
@@ -71,6 +74,9 @@ test("faculty definitions pin exact prompts, tools, models, extensions, and muta
   assert.deepEqual(hand.extensions, []);
   assert.deepEqual(hand.subagentOnlyExtensions, []);
   assert.deepEqual(hand.mutationTools, ["bash", "edit", "write"]);
+  assert.equal(hand.completionGuard, undefined);
+  assert.equal(facultyDefinition("eye", config.faculties.eye).completionGuard, false);
+  assert.equal(facultyDefinition("scale", config.faculties.scale).completionGuard, false);
   assert.match(FACULTY_PROMPTS.hand, /sole mutation-capable/);
   assert.match(FACULTY_PROMPTS.eye, /read-only/);
   assert.match(FACULTY_PROMPTS.scale, /never accept/);

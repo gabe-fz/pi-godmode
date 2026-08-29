@@ -45,6 +45,8 @@ export interface RuntimeFacultyDefinition {
   inheritSkills: false;
   maxSubagentDepth: number;
   mutationTools?: readonly string[];
+  /** Read-only faculties may discuss proposed changes without triggering the implementation completion guard. */
+  completionGuard?: boolean;
   acceptanceRole: "read-only" | "writer";
 }
 
@@ -64,7 +66,9 @@ export function facultyDefinition(faculty: Faculty, config: FacultyConfig): Runt
     inheritGlobalContext: false,
     inheritSkills: false,
     maxSubagentDepth: 1,
-    ...(faculty === "hand" ? { mutationTools: ["bash", "edit", "write"], acceptanceRole: "writer" as const } : { acceptanceRole: "read-only" as const }),
+    ...(faculty === "hand"
+      ? { mutationTools: ["bash", "edit", "write"], acceptanceRole: "writer" as const }
+      : { completionGuard: false, acceptanceRole: "read-only" as const }),
   };
 }
 
