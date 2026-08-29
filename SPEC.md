@@ -177,7 +177,9 @@ Validation rules:
 - `title` is 1–160 characters.
 - `task` is nonempty and bounded to 32 KiB.
 - arrays are bounded, deduplicated, and contain nonempty strings;
-- paths may be checkout-relative or absolute when they resolve within the active checkout; absolute paths are normalized to checkout-relative form, while traversal, outside paths, and escaping symlinks are rejected;
+- relative `contextFiles` remain checkout-confined; an in-checkout absolute context path is normalized to checkout-relative form, while an explicitly absolute outside-checkout context path is accepted and preserved as absolute; parent traversal and symlink escapes originating inside the checkout are rejected;
+- every `expectedPaths` entry remains checkout-confined and is normalized to checkout-relative form; absolute paths that resolve outside, traversal, and checkout-originating symlink escapes are rejected, including when Eye or Scale reinterpret expected paths as context;
+- external context paths and their contents are untrusted and may expose sensitive data;
 - `hand` requires nonempty `expectedPaths` and `acceptanceChecks`;
 - `eye` and `scale` reject mutation-oriented instructions; any supplied `expectedPaths` are safely reinterpreted as additional deduplicated `contextFiles` rather than mutation scope;
 - the current Pi project must be trusted;
@@ -185,7 +187,7 @@ Validation rules:
 - no other faculty may be active;
 - the resolved faculty launch contract must match its configured model, thinking, tools, and extension restrictions.
 
-Absolute paths that resolve within the active checkout are normalized to checkout-relative form before assignment rendering. For Eye and Scale, `expectedPaths` are safely reinterpreted as additional deduplicated `contextFiles`; they do not grant read-only faculties mutation scope.
+In `contextFiles`, absolute paths that resolve within the active checkout are normalized to checkout-relative form, while explicitly absolute paths that resolve outside it are preserved as absolute context. Relative context paths remain checkout-confined. For Eye and Scale, `expectedPaths` are first subjected to the stricter checkout-only policy, then safely reinterpreted as additional deduplicated `contextFiles`; they do not grant read-only faculties mutation scope or permit external paths.
 
 The extension converts these fields into one compact assignment containing:
 
@@ -448,7 +450,7 @@ Godmode uses the Primary’s canonical checkout for every faculty.
 - Only Hand has mutation tools.
 - Only one faculty may be active, so two Hands cannot overlap.
 - While Hand is active, Godmode blocks Primary mutation tool calls including `bash`, `edit`, `write`, `apply_patch`, and equivalent configured mutation tools.
-- Narrow read-only searches may remain available to the Primary when they can be classified safely.
+- The documented read-only web tools `web_search`, `fetch_content`, and `get_search_content` remain available to the Primary while Hand is active; unknown and mutation-capable tools remain blocked.
 - Eye and Scale can never be used as a path to mutation tools because their effective child tool allowlists are verified during preflight.
 - Human edits and unrelated Pi sessions remain outside Godmode’s authority and must be considered during final inspection.
 - Godmode never runs git mutation, merge, publication, or rollback operations automatically.
@@ -500,6 +502,7 @@ Godmode pins a compatible `pi-subagents` peer range and fails enable with an act
 - Godmode operates only in a Pi-trusted project.
 - Faculties run under the same operating-system account as the Primary; tool allowlists are policy controls, not an OS sandbox.
 - Repository content and child output are untrusted model input.
+- Explicit external context paths and fetched web content are untrusted input, may contain malicious instructions, and may expose sensitive data to the faculty or model.
 - Capability ceilings prevent the Primary from widening faculty identity, tools, or ambient extensions through model-visible parameters.
 - Exact model configuration and strict preflight prevent silent fallback to the Primary model.
 - Assignment text never grants version-control, publication, deployment, credential, or release authority.
@@ -637,7 +640,7 @@ The first stable release is ready when:
 6. A session-scoped capability ceiling independently enforces the faculty and tool boundary.
 7. Eye and Scale are verified read-only; Hand is the only mutation-capable faculty.
 8. Exactly one faculty can be active, including under concurrent tool calls and ambiguous lifecycle status.
-9. Primary mutation tools are blocked while Hand is active.
+9. Primary mutation tools are blocked while Hand is active, while `web_search`, `fetch_content`, and `get_search_content` remain available as documented read-only web tools; unknown tools remain blocked.
 10. Faculties use fresh standalone assignments and escalate material decisions through native supervisor coordination.
 11. After delegation, the Primary returns control instead of independently repeating or continuing the active Faculty's assignment.
 12. Status, steering, stop, completion, lifecycle artifacts, and FleetView are supplied through documented `pi-subagents` behavior.

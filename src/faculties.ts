@@ -112,20 +112,30 @@ function nearestExisting(path: string): string {
   }
 }
 
+function rejectParentTraversal(value: string, field: string): void {
+  // Treat both separators as path separators so the contract stays strict on
+  // platforms that accept either spelling.
+  if (value.split(/[\\/]/u).includes("..")) throw new Error(`${field} contains parent traversal outside the active checkout contract.`);
+}
+
+function pathEscapes(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot);
+}
+
 export function normalizeCheckoutPath(input: string, cwd: string, field: string): string {
   const value = boundedText(input, field, ITEM_BYTES);
-  if (value.split(sep).includes("..")) throw new Error(`${field} contains parent traversal outside the active checkout contract.`);
+  rejectParentTraversal(value, field);
   const canonicalRoot = realpathSync(cwd);
   const absolute = isAbsolute(value) ? resolve(value) : resolve(canonicalRoot, value);
   const lexical = relative(canonicalRoot, absolute);
-  const lexicalEscapes = lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical);
-  const rawLexical = isAbsolute(value) ? relative(resolve(cwd), absolute) : lexical;
-  const rawLexicalEscapes = rawLexical === ".." || rawLexical.startsWith(`..${sep}`) || isAbsolute(rawLexical);
+  const lexicalEscapes = pathEscapes(canonicalRoot, absolute);
+  const rawLexicalEscapes = pathEscapes(resolve(cwd), absolute);
   if (lexicalEscapes && !isAbsolute(value)) throw new Error(`${field} traverses outside the active checkout.`);
   const existing = nearestExisting(absolute);
   const canonicalExisting = realpathSync(existing);
   const physical = relative(canonicalRoot, canonicalExisting);
-  const physicalEscapes = physical === ".." || physical.startsWith(`..${sep}`) || isAbsolute(physical);
+  const physicalEscapes = pathEscapes(canonicalRoot, canonicalExisting);
   if (physicalEscapes) {
     const beginsInsideCheckout = isAbsolute(value) ? !rawLexicalEscapes : !lexicalEscapes;
     if (beginsInsideCheckout) throw new Error(`${field} resolves through a symlink outside the active checkout.`);
@@ -135,12 +145,42 @@ export function normalizeCheckoutPath(input: string, cwd: string, field: string)
   return lexical || ".";
 }
 
+/**
+ * Normalize a context path without turning an explicitly external absolute
+ * path into a checkout-relative path. Relative paths remain checkout-confined;
+ * absolute paths that resolve inside the checkout retain the checkout policy.
+ */
+export function normalizeContextPath(input: string, cwd: string, field: string): string {
+  const value = boundedText(input, field, ITEM_BYTES);
+  rejectParentTraversal(value, field);
+  if (!isAbsolute(value)) return normalizeCheckoutPath(value, cwd, field);
+
+  const canonicalRoot = realpathSync(cwd);
+  const absolute = resolve(value);
+  const lexicalEscapes = pathEscapes(canonicalRoot, absolute);
+  const rawLexicalEscapes = pathEscapes(resolve(cwd), absolute);
+  const existing = nearestExisting(absolute);
+  const canonicalExisting = realpathSync(existing);
+  const physicalEscapes = pathEscapes(canonicalRoot, canonicalExisting);
+
+  // An absolute path whose existing portion resolves outside the checkout is
+  // explicitly external context. Preserve the caller's absolute spelling,
+  // unless its lexical origin is inside the checkout (an escaping symlink).
+  if (physicalEscapes) {
+    const beginsInsideCheckout = !lexicalEscapes || !rawLexicalEscapes;
+    if (beginsInsideCheckout) throw new Error(`${field} resolves through a symlink outside the active checkout.`);
+    return value;
+  }
+  if (lexicalEscapes) return join(relative(canonicalRoot, canonicalExisting), relative(existing, absolute)) || ".";
+  return relative(canonicalRoot, absolute) || ".";
+}
+
 export function validateDelegation(input: DelegationInput, cwd: string): NormalizedDelegation {
   if (input.faculty !== "eye" && input.faculty !== "hand" && input.faculty !== "scale") throw new Error("faculty must be eye, hand, or scale.");
   const title = boundedText(input.title, "title", 640);
   if ([...title].length > 160) throw new Error("title must be at most 160 characters.");
   const task = boundedText(input.task, "task", TASK_BYTES);
-  let contextFiles = [...new Set(normalizeArray(input.contextFiles, "contextFiles").map((entry, index) => normalizeCheckoutPath(entry, cwd, `contextFiles[${index}]`)))];
+  let contextFiles = [...new Set(normalizeArray(input.contextFiles, "contextFiles").map((entry, index) => normalizeContextPath(entry, cwd, `contextFiles[${index}]`)))];
   let expectedPaths = [...new Set(normalizeArray(input.expectedPaths, "expectedPaths").map((entry, index) => normalizeCheckoutPath(entry, cwd, `expectedPaths[${index}]`)))];
   const acceptanceChecks = normalizeArray(input.acceptanceChecks, "acceptanceChecks");
   const constraints = normalizeArray(input.constraints, "constraints");

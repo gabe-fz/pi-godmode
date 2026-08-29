@@ -12,11 +12,15 @@ test("model-facing schemas expose no arbitrary agent/model/cwd/workflow/tool sur
     assert.equal(delegate.Check({ ...valid, [forbidden]: "evil" }), false, forbidden);
   }
   assert.equal(delegate.Check({ ...valid, faculty: "oracle" }), false);
-  for (const field of ["contextFiles", "expectedPaths"] as const) {
-    const pathSchema = DelegateSchema.properties[field] as unknown as { description?: string; items: { description?: string } };
-    assert.match(pathSchema.description ?? "", /relative to the active checkout root/);
-    assert.match(pathSchema.items.description ?? "", /never an absolute path/);
-  }
+  const contextSchema = DelegateSchema.properties.contextFiles as unknown as { description?: string; items: { description?: string } };
+  assert.match(contextSchema.description ?? "", /Absolute paths inside the checkout/);
+  assert.match(contextSchema.description ?? "", /outside paths remain absolute/);
+  assert.match(contextSchema.description ?? "", /untrusted/);
+  assert.match(contextSchema.items.description ?? "", /may expose sensitive data/);
+  const expectedSchema = DelegateSchema.properties.expectedPaths as unknown as { description?: string; items: { description?: string } };
+  assert.match(expectedSchema.description ?? "", /always confined to the active checkout/);
+  assert.match(expectedSchema.description ?? "", /absolute paths that resolve outside/);
+  assert.match(expectedSchema.items.description ?? "", /never an absolute path/);
 });
 
 test("control schema has no selectable child id and rejects extra fields", () => {

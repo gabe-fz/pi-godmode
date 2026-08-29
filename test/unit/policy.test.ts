@@ -8,9 +8,9 @@ function snapshot(faculty: "eye" | "hand" | "scale", phase: "launching" | "runni
   return { phase: "active", delegation: phase, activeRun: { runId: "r", faculty, agent: `godmode-${faculty}`, title: "t", assignment: "a", phase, startedAt: 1 } };
 }
 
-test("mutation guard blocks every non-narrow Primary tool only while Hand owns checkout", () => {
-  for (const tool of ["bash", "edit", "write", "apply_patch", "custom_mutator", "web_search"]) assert(mutationGuard(tool, snapshot("hand"))?.block);
-  for (const tool of ["read", "grep", "find", "ls", "godmode_control", "subagent_supervisor"]) assert.equal(mutationGuard(tool, snapshot("hand")), undefined);
+test("mutation guard blocks mutation and unknown tools while allowing narrow reads and documented web reads", () => {
+  for (const tool of ["bash", "edit", "write", "apply_patch", "custom_mutator", "unknown_tool"]) assert(mutationGuard(tool, snapshot("hand"))?.block);
+  for (const tool of ["read", "grep", "find", "ls", "godmode_control", "subagent_supervisor", "web_search", "fetch_content", "get_search_content"]) assert.equal(mutationGuard(tool, snapshot("hand")), undefined);
   assert.equal(mutationGuard("write", snapshot("eye")), undefined);
 });
 

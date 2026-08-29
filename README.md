@@ -72,10 +72,10 @@ This directly toggles the mode: off enables Godmode, while active or degraded di
 While enabled:
 
 - arbitrary model-facing `subagent` execution and generic `subagent_wait` polling are removed and blocked;
-- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously; supplied paths may be relative or absolute inside the active checkout (absolute paths are normalized to relative form, while outside paths and escaping symlinks are rejected); Eye and Scale safely treat `expectedPaths` as additional context files;
+- `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously; relative `contextFiles` remain checkout-confined, in-checkout absolute context paths normalize to relative form, and explicitly absolute external context paths remain absolute; every `expectedPaths` entry is checkout-confined and normalized to relative form, including before Eye and Scale reinterpret them as additional context files; parent traversal and symlink escapes originating inside the checkout are rejected; external context and its contents are untrusted and may expose sensitive data;
 - `godmode_control` reports, steers, or stops the sole package-owned run;
 - native `subagent_supervisor` behavior remains available for faculty questions;
-- Primary mutation tools are blocked while Hand owns the checkout;
+- Primary mutation tools are blocked while Hand owns the checkout, while the documented read-only web tools `web_search`, `fetch_content`, and `get_search_content` remain available;
 - the footer shows bounded Godmode status while FleetView remains the detailed child UI.
 
 Godmode waits for terminal package status before releasing its ceiling, faculties, tools, and model lease.
@@ -84,7 +84,7 @@ Outside TUI mode, `/godmode` only reports bounded state and never mutates the mo
 
 ## Trust and review boundary
 
-Faculties run as the same operating-system user as the Primary. Tool allowlists and capability ceilings are policy controls, **not an OS sandbox**. Human edits and other Pi sessions are outside Godmode's checkout-ownership policy.
+Faculties run as the same operating-system user as the Primary. Tool allowlists and capability ceilings are policy controls, **not an OS sandbox**. Explicit external context paths and fetched web content are untrusted input, may contain malicious instructions, and may expose sensitive data to the faculty or model. Human edits and other Pi sessions are outside Godmode's checkout-ownership policy.
 
 `pi-subagents` owns child processes, control transport, FleetView, lifecycle artifacts, transcripts, and completion delivery. Those artifacts can contain sensitive repository content; review the pi-subagents artifact policy for storage and retention details.
 

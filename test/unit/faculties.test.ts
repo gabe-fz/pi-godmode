@@ -57,12 +57,24 @@ test("paths normalize in-checkout absolute paths and reject traversal or escapin
   assert.deepEqual(normalized.expectedPaths, []);
   const inbound = validateDelegation({ ...base, contextFiles: [join(outside, "into-checkout")] }, cwd);
   assert.deepEqual(inbound.contextFiles, ["src"]);
+  const external = join(outside, "notes.txt");
+  const externalContext = validateDelegation({ ...base, contextFiles: [external] }, cwd);
+  assert.deepEqual(externalContext.contextFiles, [external]);
   assert.throws(() => validateDelegation({ ...base, contextFiles: ["../x"] }, cwd), /traversal/);
-  assert.throws(() => validateDelegation({ ...base, contextFiles: [outside] }, cwd), /outside/);
   assert.throws(() => validateDelegation({ ...base, contextFiles: ["escape/file"] }, cwd), /symlink/);
   assert.throws(() => validateDelegation({ ...base, contextFiles: [join(cwd, "escape/file")] }, cwd), /symlink/);
   assert.throws(() => validateDelegation({ ...base, contextFiles: ["escape/../src"] }, cwd), /traversal/);
   assert.throws(() => validateDelegation({ ...base, contextFiles: [`${cwd}${sep}escape${sep}..${sep}src`] }, cwd), /traversal/);
+  for (const faculty of ["eye", "scale"] as const) {
+    assert.throws(() => validateDelegation({ ...base, faculty, expectedPaths: [external] }, cwd), /outside/);
+  }
+  assert.throws(() => validateDelegation({
+    faculty: "hand",
+    title: "Implement",
+    task: "Implement source",
+    expectedPaths: [external],
+    acceptanceChecks: ["npm test"],
+  }, cwd), /outside/);
 });
 
 test("faculty definitions pin exact prompts, tools, models, extensions, and mutation role", () => {
