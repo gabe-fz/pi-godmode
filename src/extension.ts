@@ -4,6 +4,7 @@ import { ActiveToolLease } from "./active-tools.ts";
 import { registerFaculties } from "./agents.ts";
 import { DEFAULT_CEILING_REGISTRAR } from "./ceiling.ts";
 import { loadConfig } from "./config.ts";
+import { initializeGodmodeSession, toggleGodmodeTui } from "./extension-helpers.ts";
 import { GodmodeMode } from "./mode.ts";
 import { ModelLease, type PiModel } from "./model-lease.ts";
 import { mutationGuard } from "./mutation-guard.ts";
@@ -116,13 +117,9 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
 
   registerGodmodeTools(pi, mode);
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
-    if (mode.snapshot.phase === "off") {
-      const inactive = pi.getActiveTools().filter((name) => name !== "godmode_delegate" && name !== "godmode_control");
-      pi.setActiveTools(inactive);
-      if (ctx.hasUI) ctx.ui.setStatus("godmode", undefined);
-    }
+    await initializeGodmodeSession(mode, pi, ctx);
   });
 
   pi.registerCommand("godmode", {
@@ -136,26 +133,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
         else console.log(report);
         return;
       }
-      await ctx.waitForIdle();
-      const snapshot = mode.snapshot;
-      if (snapshot.phase === "off") {
-        const choice = await ctx.ui.select("Godmode", ["Enable Godmode", "Close"]);
-        if (choice !== "Enable Godmode") return;
-        try { await mode.enable(); ctx.ui.notify("Godmode enabled.", "info"); }
-        catch (error) { ctx.ui.notify(`Godmode enable failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
-        return;
-      }
-      if (snapshot.activeRun) {
-        const choice = await ctx.ui.select("Godmode", ["Stop faculty and disable", "Keep Godmode active", "Close"]);
-        if (choice !== "Stop faculty and disable") return;
-        try { await mode.disable({ stopActive: true }); ctx.ui.notify("Faculty stopped and Godmode disabled.", "info"); }
-        catch (error) { ctx.ui.notify(`Godmode cleanup failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
-        return;
-      }
-      const choice = await ctx.ui.select("Godmode", ["Disable Godmode", "Close"]);
-      if (choice !== "Disable Godmode") return;
-      try { await mode.disable(); ctx.ui.notify("Godmode disabled.", "info"); }
-      catch (error) { ctx.ui.notify(`Godmode disable failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
+      await toggleGodmodeTui(mode, ctx);
     },
   });
 

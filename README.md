@@ -1,6 +1,6 @@
 # pi-godmode
 
-Opt-in, single-faculty orchestration for [Pi](https://github.com/earendil-works/pi-mono), built on the documented public APIs of [`pi-subagents`](https://github.com/nicobailon/pi-subagents).
+Default-on, single-faculty orchestration for [Pi](https://github.com/earendil-works/pi-mono), built on the documented public APIs of [`pi-subagents`](https://github.com/nicobailon/pi-subagents).
 
 Godmode promotes the interactive Primary to an allowlisted high-tier model and exposes only three constrained child roles:
 
@@ -59,13 +59,15 @@ The intended policy is Godmode on Sol at medium effort, Eye and Hand on Luna at 
 
 ## Use
 
-Run exactly:
+Every Pi session initializes the ordinary tool baseline and then automatically attempts to enable Godmode. Enabling is transactional: trust, configuration, pi-subagents capabilities, model authentication, Primary promotion, runtime faculty registration, capability ceiling, launch-contract preflight, and active tools must all succeed. A startup failure rolls the session back to off, leaves session startup running, and shows an actionable error notification in the UI; fix the reported issue and run `/godmode` to retry.
+
+In TUI mode, run exactly:
 
 ```text
 /godmode
 ```
 
-The TUI opens a toggle dialog. Enabling is transactional: trust, configuration, pi-subagents capabilities, model authentication, Primary promotion, runtime faculty registration, capability ceiling, launch-contract preflight, and active tools must all succeed. A failure rolls the session back.
+This directly toggles the mode: off enables Godmode, while active or degraded disables it. If a faculty is active, toggling off uses the explicit stop-and-disable cleanup path and waits for terminal package status before releasing resources.
 
 While enabled:
 
@@ -76,9 +78,9 @@ While enabled:
 - Primary mutation tools are blocked while Hand owns the checkout;
 - the footer shows bounded Godmode status while FleetView remains the detailed child UI.
 
-Disabling with active work requires the explicit **Stop faculty and disable** action. Godmode waits for terminal package status before releasing its ceiling, faculties, tools, and model lease.
+Godmode waits for terminal package status before releasing its ceiling, faculties, tools, and model lease.
 
-Outside TUI mode, `/godmode` only reports state and never mutates the mode.
+Outside TUI mode, `/godmode` only reports bounded state and never mutates the mode.
 
 ## Trust and review boundary
 

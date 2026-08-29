@@ -6,7 +6,7 @@
 
 ## 1. Summary
 
-Pi Godmode is an opt-in orchestration mode for Pi. When enabled, the current interactive session is promoted to a configured high-tier model that retains responsibility for understanding requests, planning, decisions, user interaction, review, validation, and final acceptance.
+Pi Godmode is a default-on orchestration mode for Pi. At every session start, after the ordinary tool baseline is initialized, the current interactive session automatically attempts to become active on a configured high-tier model. The session retains responsibility for understanding requests, planning, decisions, user interaction, review, validation, and final acceptance.
 
 The primary session delegates bounded execution through three specialized **Divine Faculties** backed by `pi-subagents`:
 
@@ -63,7 +63,7 @@ Godmode will not implement:
 
 | Term | Meaning |
 | --- | --- |
-| **Godmode** | The session-local opt-in mode defined by this package. |
+| **Godmode** | The session-local mode defined by this package; it defaults active after session startup succeeds. |
 | **Primary** | The interactive, high-tier Pi session that owns decisions and acceptance. |
 | **Divine Faculty** | One configured `pi-subagents` child role available through Godmode. |
 | **Eye** | Read-only faculty for reconnaissance and explanation. |
@@ -107,27 +107,11 @@ The command accepts no arguments. Non-whitespace arguments display:
 Usage: /godmode
 ```
 
-In interactive TUI mode, `/godmode` opens a compact toggle dialog.
+At every `session_start`, Godmode first restores the ordinary active-tool baseline and then attempts transactional enablement. If startup enablement fails, the mode rolls back to off, session startup continues, and the UI receives an actionable error notification; after fixing the reported issue, run `/godmode` to retry.
 
-When off:
+In interactive TUI mode, `/godmode` directly toggles: off enables Godmode, while active or degraded disables it. Disabling never silently leaves an assignment running. When a faculty is active, the direct toggle-off uses the explicit stop-and-disable cleanup path and waits for terminal package status before restoring the previous Primary state.
 
-- **Enable Godmode**
-- **Close**
-
-When active and idle:
-
-- **Disable Godmode**
-- **Close**
-
-When a faculty is active:
-
-- **Stop faculty and disable**
-- **Keep Godmode active**
-- **Close**
-
-Disabling never silently leaves an assignment running. The explicit disable path first stops the active package-owned run and waits for a terminal status before restoring the previous Primary state.
-
-Outside TUI mode, `/godmode` is read-only and reports the current bounded state. Mode mutation requires the interactive command.
+Outside TUI mode, `/godmode` is read-only and reports the current bounded state. Mode mutation remains restricted to the interactive TUI command.
 
 ### 6.3 Footer
 
@@ -644,9 +628,9 @@ Exit: Eye, Hand, and Scale operate through the complete Godmode workflow with de
 
 The first stable release is ready when:
 
-1. `/godmode` is the only Godmode slash command and mode is off by default.
-2. Enabling selects an explicitly configured high-tier model/thinking level and disabling restores the prior state.
-3. Enable fails transactionally when trust, configuration, models, authentication, faculty preflight, or required `pi-subagents` capabilities are unavailable.
+1. `/godmode` is the only Godmode slash command; each session starts by attempting default-on enablement after the ordinary tool baseline is initialized, and TUI `/godmode` directly toggles.
+2. Startup or manual enablement selects an explicitly configured high-tier model/thinking level and disabling restores the prior state.
+3. Enable fails transactionally when trust, configuration, models, authentication, faculty preflight, or required `pi-subagents` capabilities are unavailable; startup failure leaves the session running in off state and shows an actionable UI notification when available.
 4. The Primary can launch only Eye, Hand, or Scale through the Godmode model-facing API.
 5. Oracle, arbitrary agents, workflow scripts, nested delegation, schedules, worktrees, arbitrary cwd, and model/tool overrides are absent from that API.
 6. A session-scoped capability ceiling independently enforces the faculty and tool boundary.
