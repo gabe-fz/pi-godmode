@@ -67,8 +67,8 @@ export function registerGodmodeTools(pi: ExtensionAPI, mode: GodmodeMode): void 
   pi.registerTool({
     name: "godmode_control",
     label: "Control Divine Faculty",
-    description: "Inspect, steer, or stop the sole Godmode faculty. No child ID is selectable.",
-    promptSnippet: "Inspect, steer, or stop the sole active Divine Faculty",
+    description: "Inspect, steer, or stop the sole Godmode faculty. No child ID is selectable. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
+    promptSnippet: "Control the sole Divine Faculty. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
     parameters: ControlSchema,
     async execute(_toolCallId, params) {
       if (params.action === "status") {
