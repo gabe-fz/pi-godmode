@@ -13,6 +13,7 @@ export interface ModelTuple {
 
 export interface FacultyConfig extends ModelTuple {
   thinking: ThinkingLevel;
+  /** Soft elapsed deadline; Godmode derives a finite hard backstop. */
   timeoutMs: number;
 }
 
@@ -44,7 +45,20 @@ export interface NormalizedDelegation extends DelegationInput {
 
 export type ModePhase = "off" | "enabling" | "active" | "degraded" | "stopping";
 export type DelegationPhase = "idle" | "launching" | "running" | "attention" | "stopping" | "terminal";
-export type TerminalRunState = "complete" | "failed" | "stopped" | "rejected";
+export type TerminalRunState = "complete" | "failed" | "stopped" | "rejected" | "timed_out";
+export type DeadlinePhase = "normal" | "pending" | "extended" | "hard";
+export type CheckpointState = "not_requested" | "pending" | "requested" | "failed";
+
+export interface DeadlineStatus {
+  phase: DeadlinePhase;
+  softDeadlineAt: number;
+  hardDeadlineAt: number;
+  remainingMs: number;
+  hardRemainingMs: number;
+  checkpoint: CheckpointState;
+  checkpointRequestedAt?: number;
+  extensionMs?: number;
+}
 
 export interface ActiveRun {
   runId?: string;
@@ -54,6 +68,8 @@ export interface ActiveRun {
   assignment: string;
   phase: Exclude<DelegationPhase, "idle" | "terminal">;
   startedAt: number;
+  /** Present for runs launched by the current deadline-aware mode. */
+  deadline?: DeadlineStatus;
   result?: unknown;
 }
 
@@ -65,6 +81,7 @@ export interface GodmodeSnapshot {
     runId: string;
     faculty: Faculty;
     state: TerminalRunState;
+    deadline?: Readonly<DeadlineStatus>;
     result?: unknown;
   };
   degradedReason?: string;

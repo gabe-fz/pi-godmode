@@ -18,7 +18,40 @@ test("status rendering is bounded and covers stable footer states", () => {
   assert.equal(statusLine({ phase: "active", delegation: "idle" }), "GODMODE ● idle");
   assert.equal(statusLine(snapshot("eye")), "GODMODE ● Eye running");
   assert.equal(statusLine(snapshot("hand", "attention")), "GODMODE ● decision requested");
+  assert.equal(statusLine({
+    ...snapshot("hand"),
+    activeRun: { ...snapshot("hand").activeRun!, deadline: { phase: "pending", softDeadlineAt: 1, hardDeadlineAt: 2, remainingMs: 0, hardRemainingMs: 1, checkpoint: "pending" } },
+  }), "GODMODE ● Hand deadline pending");
   assert.equal(statusLine({ phase: "degraded", delegation: "idle", degradedReason: "x" }), "GODMODE ● degraded");
   const result = boundedStatus({ phase: "active", delegation: "idle", degradedReason: "x".repeat(5000) });
   assert.equal((result.degradedReason as string).length, 1024);
+});
+
+test("bounded status exposes deadline phase and timing without assignment details", () => {
+  const result = boundedStatus({
+    phase: "active",
+    delegation: "running",
+    activeRun: {
+      ...snapshot("hand").activeRun!,
+      deadline: {
+        phase: "pending",
+        softDeadlineAt: 1_000,
+        hardDeadlineAt: 2_000,
+        remainingMs: 0,
+        hardRemainingMs: 1_000,
+        checkpoint: "requested",
+        checkpointRequestedAt: 1_000,
+      },
+    },
+  });
+  assert.deepEqual((result.active as any).deadline, {
+    phase: "pending",
+    softDeadlineAt: 1_000,
+    hardDeadlineAt: 2_000,
+    remainingMs: 0,
+    hardRemainingMs: 1_000,
+    checkpoint: "requested",
+    checkpointRequestedAt: 1_000,
+  });
+  assert.equal((result.active as any).assignment, undefined);
 });

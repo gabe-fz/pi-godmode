@@ -51,5 +51,15 @@ test("status and completion parsing retain exact lifecycle meaning", async () =>
   assert.equal(completionState({ runId: "r", results: [{ success: false }] }), "failed");
   assert.equal(completionState({ runId: "r", stopped: true }), "stopped");
   assert.equal(completionState({ runId: "r", state: "paused" }), "needs_attention");
+  assert.equal(completionState({ runId: "r", state: "timed_out" }), "timed_out");
+  assert.equal(completionState({ runId: "r", timedOut: true }), "timed_out");
   assert.equal(completionState({ runId: "r", results: [{ success: true }] }), "complete");
+});
+
+test("steer supports a queued checkpoint without changing the default mode", async () => {
+  const bus = new Bus();
+  bus.responder = () => ({ deliveryStatus: "queued" });
+  const client = new SubagentsClient(bus);
+  await client.steer("r", "checkpoint", "follow_up");
+  assert.deepEqual(bus.requests[0]?.params, { id: "r", message: "checkpoint", mode: "follow_up" });
 });

@@ -57,6 +57,8 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/godmode/config.json`:
 
 The intended policy is Godmode on Sol at medium effort, Eye and Hand on Luna at xhigh effort, and Scale on Terra at medium effort. Every provider/model tuple is exact. There is no inferred fallback. Faculty tuples cannot reuse a Godmode tuple. All configured models must be authenticated, available, and permitted by the active Pi and pi-subagents model scopes.
 
+`timeoutMs` is the faculty's **soft deadline**. It does not immediately terminate a healthy Faculty: Godmode requests a checkpoint after the current tool returns and marks the run deadline-pending. Godmode derives a finite hard deadline by adding a grace period equal to the soft timeout for short runs, capped at five minutes for longer runs. A supervisor may grant one explicit extension of up to five minutes through `godmode_control`, subject to the headroom reserved in the immutable launch backstop; extreme timeout values at the platform maximum have no extension headroom. No automatic or indefinite extensions are made. The underlying pi-subagents launch receives a finite outer backstop large enough for the possible extension because its public API cannot update a live run deadline.
+
 ## Use
 
 Every Pi session initializes the ordinary tool baseline and then automatically attempts to enable Godmode. Enabling is transactional: trust, configuration, pi-subagents capabilities, model authentication, Primary promotion, runtime faculty registration, capability ceiling, launch-contract preflight, and active tools must all succeed. A startup failure rolls the session back to off, leaves session startup running, and shows an actionable error notification in the UI; fix the reported issue and run `/godmode` to retry.
@@ -73,7 +75,7 @@ While enabled:
 
 - arbitrary model-facing `subagent` execution and generic `subagent_wait` polling are removed and blocked;
 - `godmode_delegate` launches only Eye, Hand, or Scale with fresh context, with completion delivered asynchronously; relative `contextFiles` remain checkout-confined, in-checkout absolute context paths normalize to relative form, and explicitly absolute external context paths remain absolute; every `expectedPaths` entry is checkout-confined and normalized to relative form, including before Eye and Scale reinterpret them as additional context files; parent traversal and symlink escapes originating inside the checkout are rejected; external context and its contents are untrusted and may expose sensitive data;
-- `godmode_control` reports, steers, or stops the sole package-owned run;
+- `godmode_control` reports, steers, stops, or grants one bounded extension to the sole package-owned run; deadline status includes soft/hard timestamps, remaining time, checkpoint state, and any extension;
 - native `subagent_supervisor` behavior remains available for faculty questions;
 - Primary mutation tools are blocked while Hand owns the checkout, while the documented read-only web tools `web_search`, `fetch_content`, and `get_search_content` remain available;
 - the footer shows bounded Godmode status while FleetView remains the detailed child UI.

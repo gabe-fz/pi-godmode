@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import type { GodmodeMode } from "./mode.ts";
+import { MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
 import { boundedStatus } from "./status.ts";
 
 const StringList = Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 }));
@@ -38,9 +39,10 @@ export const DelegateSchema = Type.Object({
 }, { additionalProperties: false });
 
 export const ControlSchema = Type.Object({
-  action: StringEnum(["status", "steer", "stop"] as const),
+  action: StringEnum(["status", "steer", "stop", "extend"] as const),
   message: Type.Optional(Type.String({ minLength: 1, maxLength: 32768 })),
   reason: Type.Optional(Type.String({ maxLength: 4096 })),
+  extensionMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SUPERVISOR_EXTENSION_MS })),
 }, { additionalProperties: false });
 
 export type DelegateParams = Static<typeof DelegateSchema>;
@@ -67,22 +69,27 @@ export function registerGodmodeTools(pi: ExtensionAPI, mode: GodmodeMode): void 
   pi.registerTool({
     name: "godmode_control",
     label: "Control Divine Faculty",
-    description: "Inspect, steer, or stop the sole Godmode faculty. No child ID is selectable. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
-    promptSnippet: "Control the sole Divine Faculty. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
+    description: "Inspect, steer, stop, or grant one bounded extension to the sole Godmode faculty. No child ID is selectable. A configured faculty timeout is a soft deadline: after it, the Faculty is asked to checkpoint after its current tool, and the Primary may grant at most one extension of up to five minutes before the finite hard deadline. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
+    promptSnippet: "Control the sole Divine Faculty. Configured timeout is a soft deadline; after it, inspect deadline-pending status and grant at most one bounded extension only when warranted. Automatic completion delivery is the default. Never call godmode_control status merely to check whether a queued or running faculty has finished. Use godmode_control status only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.",
     parameters: ControlSchema,
     async execute(_toolCallId, params) {
       if (params.action === "status") {
-        if (params.message !== undefined || params.reason !== undefined) throw new Error("godmode_control status accepts only action.");
+        if (params.message !== undefined || params.reason !== undefined || params.extensionMs !== undefined) throw new Error("godmode_control status accepts only action.");
         const snapshot = mode.snapshot.activeRun?.runId ? await mode.status() : mode.snapshot;
         const result = boundedStatus(snapshot);
         return { content: [{ type: "text", text: text(result) }], details: result };
       }
       if (params.action === "steer") {
-        if (!params.message?.trim() || params.reason !== undefined) throw new Error("godmode_control steer requires message and rejects reason.");
+        if (!params.message?.trim() || params.reason !== undefined || params.extensionMs !== undefined) throw new Error("godmode_control steer requires message and rejects reason/extensionMs.");
         const result = boundedStatus(await mode.steer(params.message));
         return { content: [{ type: "text", text: text(result) }], details: result };
       }
-      if (params.message !== undefined) throw new Error("godmode_control stop rejects message; use optional reason.");
+      if (params.action === "extend") {
+        if (params.message !== undefined || params.reason !== undefined || params.extensionMs === undefined) throw new Error("godmode_control extend requires extensionMs and rejects message/reason.");
+        const result = boundedStatus(await mode.extend(params.extensionMs));
+        return { content: [{ type: "text", text: text(result) }], details: result };
+      }
+      if (params.message !== undefined || params.extensionMs !== undefined) throw new Error("godmode_control stop rejects message/extensionMs; use optional reason.");
       const result = boundedStatus(await mode.stop(params.reason));
       return { content: [{ type: "text", text: text(result) }], details: result };
     },

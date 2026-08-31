@@ -18,6 +18,7 @@ const PING = {
 class OwnerBus implements EventBus {
   handlers = new Map<string, Set<(value: unknown) => void>>();
   log: string[] = [];
+  requests: Record<string, any>[] = [];
   runState: string = "running";
   holdSpawn = false;
   dropSpawn = false;
@@ -26,6 +27,7 @@ class OwnerBus implements EventBus {
   emit(event: string, value: unknown) {
     if (event === RPC_REQUEST_EVENT) {
       const request = value as Record<string, any>;
+      this.requests.push(request);
       this.log.push(`rpc:${request.method}`);
       const reply = (data: unknown) => queueMicrotask(() => this.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, success: true, data }));
       if (request.method === "ping") reply(PING);
@@ -43,7 +45,16 @@ class OwnerBus implements EventBus {
   }
 }
 
-function fixture(options: { preflightError?: Error; holdSpawn?: boolean; dropSpawn?: boolean; clientTimeoutMs?: number } = {}) {
+function fixture(options: {
+  preflightError?: Error;
+  holdSpawn?: boolean;
+  dropSpawn?: boolean;
+  clientTimeoutMs?: number;
+  facultyTimeoutMs?: number;
+  now?: () => number;
+  setTimer?: (callback: () => void, ms: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+} = {}) {
   const bus = new OwnerBus();
   bus.holdSpawn = options.holdSpawn ?? false;
   bus.dropSpawn = options.dropSpawn ?? false;
@@ -66,7 +77,11 @@ function fixture(options: { preflightError?: Error; holdSpawn?: boolean; dropSpa
     client,
     modelLease: new ModelLease(),
     modelHost: host,
-    loadConfig: async () => validConfig(),
+    loadConfig: async () => {
+      const config = validConfig();
+      if (options.facultyTimeoutMs !== undefined) config.faculties.eye.timeoutMs = options.facultyTimeoutMs;
+      return config;
+    },
     isTrusted: () => true,
     cwd: () => cwd,
     sessionId: () => "session-1",
@@ -80,6 +95,9 @@ function fixture(options: { preflightError?: Error; holdSpawn?: boolean; dropSpa
     acquireTools: () => log.push("tools:acquire"),
     releaseTools: () => log.push("tools:release"),
     sleep: async () => {},
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.setTimer ? { setTimer: options.setTimer } : {}),
+    ...(options.clearTimer ? { clearTimer: options.clearTimer } : {}),
     pollMs: 0,
     stopWaitMs: 1000,
   };
@@ -110,6 +128,115 @@ test("transactional enable, single-slot launch, attention, steer, and exact comp
   assert.equal(f.mode.snapshot.lastRun?.state, "complete");
   f.bus.emit(ASYNC_COMPLETE_EVENT, { runId: "run-1", success: false });
   assert.equal(f.mode.snapshot.lastRun?.state, "complete");
+});
+
+test("completion received before the spawn reply is replayed after run correlation", async () => {
+  const f = fixture({ holdSpawn: true });
+  await f.mode.enable();
+  const launch = f.mode.delegate(eye);
+  f.bus.emit(ASYNC_COMPLETE_EVENT, { runId: "run-1", success: true, results: [{ success: true }] });
+  assert.equal(f.mode.snapshot.delegation, "launching");
+  f.bus.pendingSpawn!();
+  assert.equal((await launch).runId, "run-1");
+  assert.equal(f.mode.snapshot.delegation, "idle");
+  assert.equal(f.mode.snapshot.lastRun?.runId, "run-1");
+  assert.equal(f.mode.snapshot.lastRun?.state, "complete");
+});
+
+test("soft deadline requests a post-tool checkpoint without stopping a healthy faculty", async () => {
+  let clock = 0;
+  const timers: Array<{ callback: () => void; ms: number; cleared: boolean }> = [];
+  const f = fixture({
+    facultyTimeoutMs: 1_000,
+    now: () => clock,
+    setTimer: (callback, ms) => {
+      const timer = { callback, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { (timer as { cleared: boolean }).cleared = true; },
+  });
+  await f.mode.enable();
+  await f.mode.delegate(eye);
+  assert.equal(f.bus.requests.find((request) => request.method === "spawn")?.params.timeoutMs, 302_000);
+  clock = 1_000;
+  timers[0]!.callback();
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.phase, "pending");
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.checkpoint, "pending");
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.checkpoint, "requested");
+  const steer = f.bus.requests.find((request) => request.method === "steer");
+  assert.equal(steer?.params.mode, "follow_up");
+  assert.match(steer?.params.message ?? "", /checkpoint/i);
+  assert.equal(f.mode.snapshot.activeRun?.phase, "running");
+});
+
+test("supervisor can grant one bounded deadline extension before the hard stop", async () => {
+  let clock = 0;
+  const timers: Array<{ callback: () => void; ms: number; cleared: boolean }> = [];
+  const f = fixture({
+    facultyTimeoutMs: 1_000,
+    now: () => clock,
+    setTimer: (callback, ms) => {
+      const timer = { callback, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { (timer as { cleared: boolean }).cleared = true; },
+  });
+  await f.mode.enable();
+  await f.mode.delegate(eye);
+  clock = 1_000;
+  timers[0]!.callback();
+  await f.mode.extend(2_000);
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.phase, "extended");
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.extensionMs, 2_000);
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.hardDeadlineAt, 4_000);
+  await assert.rejects(f.mode.extend(1_000), /Only one/);
+  clock = 4_000;
+  timers.at(-1)!.callback();
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.phase, "hard");
+  assert.equal(f.mode.snapshot.activeRun?.phase, "stopping");
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert(f.log.includes("rpc:stop"));
+});
+
+test("extension is rejected when the immutable launch backstop has no remaining headroom", async () => {
+  let clock = 0;
+  const timers: Array<{ callback: () => void; ms: number }> = [];
+  const f = fixture({
+    facultyTimeoutMs: 2_147_482_647,
+    now: () => clock,
+    setTimer: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
+    clearTimer: () => {},
+  });
+  await f.mode.enable();
+  await f.mode.delegate(eye);
+  assert.equal(f.bus.requests.find((request) => request.method === "spawn")?.params.timeoutMs, 2_147_483_647);
+  clock = 2_147_482_647;
+  timers[0]!.callback();
+  await assert.rejects(f.mode.extend(1), /0ms reserved/);
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.hardDeadlineAt, 2_147_483_647);
+});
+
+test("finite hard deadline stops an unresolved faculty", async () => {
+  let clock = 0;
+  const timers: Array<{ callback: () => void; ms: number }> = [];
+  const f = fixture({
+    facultyTimeoutMs: 1_000,
+    now: () => clock,
+    setTimer: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
+    clearTimer: () => {},
+  });
+  await f.mode.enable();
+  await f.mode.delegate(eye);
+  clock = 2_000;
+  timers[1]!.callback();
+  assert.equal(f.mode.snapshot.activeRun?.deadline?.phase, "hard");
+  assert.equal(f.mode.snapshot.activeRun?.phase, "stopping");
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert(f.log.includes("rpc:stop"));
 });
 
 test("Hand stop-and-disable proves terminal state before ordered cleanup and restoration", async () => {

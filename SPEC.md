@@ -123,11 +123,14 @@ GODMODE ● Eye running
 GODMODE ● Hand running
 GODMODE ● Scale running
 GODMODE ● decision requested
+GODMODE ● Hand deadline pending
+GODMODE ● Hand deadline extended
+GODMODE ● Hand hard deadline
 GODMODE ● result ready
 GODMODE ● degraded
 ```
 
-FleetView remains the detailed child-status surface. Godmode does not reproduce its transcript, timers, tokens, tools, or stop controls.
+FleetView remains the detailed child-status surface. Godmode does not reproduce its transcript, tool timers, tokens, tools, or stop controls; its own bounded deadline timestamps and remaining times are included in status.
 
 ### 6.4 Primary behavior
 
@@ -222,6 +225,7 @@ godmode_control(
   | { action: "status" }
   | { action: "steer"; message: string }
   | { action: "stop"; reason?: string }
+  | { action: "extend"; extensionMs: number }
 ) -> GodmodeStatus
 ```
 
@@ -230,6 +234,7 @@ Because Godmode permits one active faculty, no child ID is model-selectable.
 - `status` reconciles the remembered package run with public `pi-subagents` status.
 - `steer` sends acknowledged guidance to the exact active run through public RPC.
 - `stop` stops the exact active run and retains the package lifecycle result.
+- `extend` is available only after a soft deadline is pending. It grants one explicit extension of 1–300,000 milliseconds to the hard deadline, limited by headroom reserved in the immutable launch backstop; the action cannot renew a run indefinitely.
 
 Steering does not change the faculty’s role, tools, model, cwd, or assignment authority.
 
@@ -373,6 +378,9 @@ Rules:
 - Godmode allowed models are nonempty;
 - the minimum Godmode thinking level is `medium`, `high`, or `xhigh`;
 - each faculty declares one exact model, thinking level, and bounded timeout;
+- `timeoutMs` is a soft elapsed deadline. At that time Godmode sends a non-interrupting `follow_up` checkpoint request and marks the run deadline-pending;
+- Godmode derives a finite hard backstop without extra configuration: the grace period is the soft timeout for runs below five minutes, otherwise five minutes. The hard backstop is soft timeout plus that grace (bounded by the launch contract maximum);
+- the underlying pi-subagents launch receives a finite outer timeout large enough for the one permitted five-minute extension because its public API cannot update a live run deadline;
 - faculty models may not reuse a configured Godmode provider/model tuple;
 - no fallback model is inferred;
 - unavailable models or authentication failures prevent enable or delegation;
@@ -431,6 +439,15 @@ idle -> launching -> running -> attention -> running
                            -> stopping -> terminal -> idle
                            -> terminal -> idle
 ```
+
+Deadline states are tracked independently of lifecycle state:
+
+```text
+normal -> pending -> extended
+                  -> hard -> stopping -> terminal
+```
+
+At `pending`, Godmode requests a checkpoint with `steer` mode `follow_up`, which queues delivery after the current tool/turn boundary rather than interrupting a healthy Faculty. At `hard`, Godmode requests a stop and the pi-subagents launch also carries the finite outer backstop. A supervisor may transition `pending` to `extended` once, with a maximum five-minute extension when the immutable launch backstop has sufficient reserved headroom.
 
 Rules:
 
@@ -650,6 +667,7 @@ The first stable release is ready when:
 16. Stop-and-disable reaches terminal package status before restoring tools and the Primary model.
 17. Unit, fake-owner integration, and real controlled-model tests cover enable, assignment, questions, mutation guard, completion, stop, disable, and restoration.
 18. Documentation clearly describes the same-user trust boundary and the Primary’s final authority.
+19. Configured faculty timeouts are soft deadlines with checkpoint notification, bounded supervisor extension, and a finite hard backstop.
 
 ## 21. Stable Primary guidance
 
@@ -660,5 +678,7 @@ The enabled Primary system guidance should remain concise and versioned:
 > Give each Faculty a fresh standalone assignment with its goal, approved behavior, starting context, constraints, validation expectations, and escalation rules. Faculties execute; they do not decide product scope, architecture authority, security policy, version control, release actions, or acceptance. Answer material supervisor questions rather than allowing a Faculty to guess.
 >
 > Faculty runs complete asynchronously; automatic completion delivery is the default. After delegation, do not independently repeat or continue the Faculty's assigned work while it is active. Return control and wait for automatic completion, except to answer material supervisor questions or handle an explicit user interruption. Never call `godmode_control status` merely to check whether a queued or running faculty has finished. Do not call `subagent_wait` or poll with short timeouts. Use `godmode_control status` only when the user explicitly requests a snapshot, when recovering unknown session state, or when diagnosing a genuinely missing completion or inconsistent state. Repeated status calls waste tokens.
+>
+> A configured faculty timeout is a soft deadline, not an immediate kill. When deadline-pending status appears, let the Faculty checkpoint after its current tool and grant at most one bounded extension through godmode_control only when warranted; the finite hard deadline remains authoritative.
 >
 > Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, resolve any Scale findings, and only then report the task complete.

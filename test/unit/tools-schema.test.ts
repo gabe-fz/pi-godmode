@@ -27,6 +27,8 @@ test("control schema has no selectable child id and rejects extra fields", () =>
   const control = Compile(ControlSchema);
   assert(control.Check({ action: "status" }));
   assert(control.Check({ action: "steer", message: "guidance" }));
+  assert(control.Check({ action: "extend", extensionMs: 60_000 }));
+  assert.equal(control.Check({ action: "extend", extensionMs: 300_001 }), false);
   assert.equal(control.Check({ action: "stop", id: "other-child" }), false);
   assert.equal(control.Check({ action: "resume", message: "x" }), false);
 });

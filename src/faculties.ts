@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { launchBackstopMs } from "./deadlines.ts";
 import type { Faculty, FacultyConfig, GodmodeConfig, NormalizedDelegation, DelegationInput, AgentName } from "./types.ts";
 
 export const FACULTY_TOOLS: Record<Faculty, readonly string[]> = {
@@ -59,7 +60,9 @@ export function facultyDefinition(faculty: Faculty, config: FacultyConfig): Runt
     thinking: config.thinking,
     defaultContext: "fresh",
     defaultAsync: true,
-    defaultTimeoutMs: config.timeoutMs,
+    // timeoutMs is the faculty's soft deadline. Give pi-subagents a finite
+    // outer backstop (including the one permitted extension) instead.
+    defaultTimeoutMs: launchBackstopMs(config.timeoutMs),
     extensions: [],
     subagentOnlyExtensions: [],
     inheritProjectContext: false,

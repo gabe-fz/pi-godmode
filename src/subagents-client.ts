@@ -43,7 +43,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function terminal(value: unknown): TerminalRunState | undefined {
   if (value === "complete" || value === "completed") return "complete";
-  if (value === "failed" || value === "stopped" || value === "rejected") return value;
+  if (value === "failed" || value === "stopped" || value === "rejected" || value === "timed_out") return value;
   return undefined;
 }
 
@@ -53,8 +53,10 @@ export function completionState(value: unknown): TerminalRunState | "needs_atten
   const direct = terminal(data.state) ?? terminal(data.status);
   if (direct) return direct;
   if (data.stopped === true) return "stopped";
+  if (data.timedOut === true || data.timed_out === true) return "timed_out";
   const results = Array.isArray(data.results) ? data.results.map(record).filter(Boolean) as Record<string, unknown>[] : [];
   for (const result of results) {
+    if (result.timedOut === true || result.timed_out === true) return "timed_out";
     const state = terminal(result.status) ?? terminal(result.state);
     if (state && state !== "complete") return state;
     if (result.success === false) return "failed";
@@ -125,14 +127,16 @@ export class SubagentsClient {
     return data;
   }
 
-  async spawn(input: { agent: string; task: string; cwd: string; config: FacultyConfig }): Promise<SpawnReceipt> {
+  async spawn(input: { agent: string; task: string; cwd: string; config: FacultyConfig; timeoutMs?: number }): Promise<SpawnReceipt> {
     const data = await this.request<Record<string, unknown>>("spawn", {
       agent: input.agent,
       task: input.task,
       cwd: input.cwd,
       context: "fresh",
       async: true,
-      timeoutMs: input.config.timeoutMs,
+      // The caller supplies the derived hard backstop. Keeping this explicit
+      // prevents the configured soft deadline from becoming destructive.
+      timeoutMs: input.timeoutMs ?? input.config.timeoutMs,
       model: `${input.config.provider}/${input.config.model}:${input.config.thinking}`,
       artifacts: true,
     });
@@ -155,8 +159,8 @@ export class SubagentsClient {
     throw new Error(`pi-subagents returned unknown state '${String(state)}' for run '${runId}'.`);
   }
 
-  async steer(runId: string, message: string): Promise<unknown> {
-    return this.request("steer", { id: runId, message, mode: "steer" });
+  async steer(runId: string, message: string, mode: "steer" | "follow_up" | "auto" = "steer"): Promise<unknown> {
+    return this.request("steer", { id: runId, message, mode });
   }
 
   async stop(runId: string, reason?: string): Promise<unknown> {
