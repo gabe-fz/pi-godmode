@@ -14,6 +14,14 @@ const MAX_PROJECTION_BYTES = 2_048;
 const MAX_STRING_LENGTH = 1_024;
 const MAX_COLLECTION_LENGTH = 64;
 const MAX_DEPTH = 8;
+/**
+ * Conservative recovery cap: Pi's active branch is expected to be a short
+ * session lineage, not an unbounded session history. Reject larger branches
+ * before walking them so parent/ancestry work remains bounded.
+ */
+const MAX_ACTIVE_BRANCH_ENTRIES = 1_024;
+/** Total own properties visited by append acknowledgement comparison. */
+const MAX_EXACT_PERSISTED_ENTRIES = 1_024;
 const REDACTED = "[REDACTED]";
 const TRUNCATED = "[TRUNCATED]";
 
@@ -244,31 +252,140 @@ function blocked(reason: string): BlockedSnapshot {
   return { status: "blocked", reason };
 }
 
-function validParentChain(entriesById: Map<string, SessionEntry>, entry: SessionEntry): boolean {
-  const seen = new Set<string>();
-  let parentId: string | null = entry.parentId;
-  while (parentId !== null) {
-    if (seen.has(parentId)) return false;
-    seen.add(parentId);
-    const parent = entriesById.get(parentId);
-    if (!parent) return false;
-    parentId = parent.parentId;
+type ParentChainState = "visiting" | "valid" | "invalid";
+
+interface BoundedBranchEntry {
+  entry: SessionEntry;
+  id: string;
+  parentId: string | null;
+}
+
+interface BoundedBranchValidation {
+  entries?: BoundedBranchEntry[];
+  exceededLimit?: boolean;
+}
+
+/**
+ * Capture and validate the complete active path before inspecting its payloads.
+ *
+ * SessionManager supplies an ordered root-to-leaf path. Do not infer that
+ * shape from candidate snapshots: candidate-free paths must fail closed too.
+ * Every host-controlled structural read is guarded and captured once, and the
+ * fixed length/ID bounds keep all callers linear and bounded.
+ */
+function boundedActiveBranchEntries(entries: readonly SessionEntry[]): BoundedBranchValidation {
+  try {
+    if (!Array.isArray(entries)) return {};
+    const entryCount = entries.length;
+    if (!Number.isSafeInteger(entryCount) || entryCount < 0 || entryCount > MAX_ACTIVE_BRANCH_ENTRIES) {
+      return { exceededLimit: true };
+    }
+    const ids = new Set<string>();
+    const branch: BoundedBranchEntry[] = [];
+    let expectedParentId: string | null = null;
+    for (let index = 0; index < entryCount; index += 1) {
+      const entry = entries[index];
+      if (!entry || !isObject(entry)) return {};
+      const id = entry.id;
+      const parentId = entry.parentId;
+      if (!validIdentity(id)
+        || (parentId !== null && !validIdentity(parentId))
+        || parentId !== expectedParentId
+        || ids.has(id)) return {};
+      ids.add(id);
+      branch.push({ entry: entry as unknown as SessionEntry, id, parentId });
+      expectedParentId = id;
+    }
+    return { entries: branch };
+  } catch {
+    return {};
   }
+}
+
+/**
+ * Resolve parent links with memoized states. Each branch entry is visited at
+ * most once while resolving all candidate chains, avoiding a per-candidate
+ * full ancestry walk.
+ */
+function validParentChain(
+  parentById: Map<string, string | null>,
+  entryId: string,
+  states: Map<string, ParentChainState>,
+): boolean {
+  const path: string[] = [];
+  let currentId: string | null = entryId;
+  while (currentId !== null) {
+    const state = states.get(currentId);
+    if (state === "valid") {
+      for (const pathId of path) states.set(pathId, "valid");
+      return true;
+    }
+    if (state === "invalid" || state === "visiting") {
+      for (const pathId of path) states.set(pathId, "invalid");
+      return false;
+    }
+    const parentId = parentById.get(currentId);
+    if (parentId === undefined) {
+      for (const pathId of path) states.set(pathId, "invalid");
+      return false;
+    }
+    states.set(currentId, "visiting");
+    path.push(currentId);
+    currentId = parentId;
+  }
+  for (const pathId of path) states.set(pathId, "valid");
   return true;
 }
 
-function hasAncestor(entriesById: Map<string, SessionEntry>, entry: SessionEntry, ancestorId: string): boolean {
-  const seen = new Set<string>();
-  let parentId: string | null = entry.parentId;
-  while (parentId !== null) {
-    if (parentId === ancestorId) return true;
-    if (seen.has(parentId)) return false;
-    seen.add(parentId);
-    const parent = entriesById.get(parentId);
-    if (!parent) return false;
-    parentId = parent.parentId;
+interface AncestryInterval {
+  start: number;
+  end: number;
+}
+
+/**
+ * Build constant-time ancestor intervals for the already-resolved candidate
+ * forest. This keeps predecessor checks linear in the bounded branch size.
+ */
+function ancestryIntervals(
+  parentById: Map<string, string | null>,
+  states: Map<string, ParentChainState>,
+): Map<string, AncestryInterval> {
+  const validIds = [...states].filter(([, state]) => state === "valid").map(([id]) => id);
+  const childrenByParent = new Map<string, string[]>();
+  for (const id of validIds) {
+    const parentId = parentById.get(id);
+    if (parentId === undefined || parentId === null) continue;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(id);
+    childrenByParent.set(parentId, children);
   }
-  return false;
+  const intervals = new Map<string, AncestryInterval>();
+  let clock = 0;
+  for (const rootId of validIds) {
+    if (parentById.get(rootId) !== null || intervals.has(rootId)) continue;
+    const stack: Array<{ id: string; exiting: boolean }> = [{ id: rootId, exiting: false }];
+    while (stack.length > 0) {
+      const frame = stack.pop();
+      if (!frame) continue;
+      if (frame.exiting) {
+        const interval = intervals.get(frame.id);
+        if (interval) interval.end = clock;
+        continue;
+      }
+      if (intervals.has(frame.id)) continue;
+      intervals.set(frame.id, { start: clock, end: -1 });
+      clock += 1;
+      stack.push({ id: frame.id, exiting: true });
+      const children = childrenByParent.get(frame.id);
+      if (children) {
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          const childId = children[index];
+          if (childId !== undefined) stack.push({ id: childId, exiting: false });
+        }
+      }
+    }
+  }
+  return intervals;
 }
 
 /**
@@ -281,17 +398,28 @@ export function reconstructActiveSnapshot(
   sessionId: string,
   workItemId: string,
 ): SnapshotRecovery {
-  if (!validIdentity(sessionId) || !validIdentity(workItemId)) return blocked("Invalid session or work-item identity; recovery blocked.");
-  if (!Array.isArray(entries)) return blocked("Malformed active branch lineage; recovery blocked.");
-  const entriesById = new Map<string, SessionEntry>();
-  for (const entry of entries) {
-    if (!isObject(entry) || !nonEmptyString(entry.id) || (entry.parentId !== null && typeof entry.parentId !== "string") || entriesById.has(entry.id)) {
-      return blocked("Duplicate or malformed session entry lineage; recovery blocked.");
-    }
-    entriesById.set(entry.id, entry as unknown as SessionEntry);
+  try {
+    return reconstructActiveSnapshotBounded(entries, sessionId, workItemId);
+  } catch {
+    return blocked("Malformed active branch lineage; recovery blocked.");
   }
-  const candidates: Array<{ entry: StoredLedgerEntry; snapshot: LedgerSnapshot }> = [];
-  for (const entry of entries) {
+}
+
+function reconstructActiveSnapshotBounded(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  workItemId: string,
+): SnapshotRecovery {
+  if (!validIdentity(sessionId) || !validIdentity(workItemId)) return blocked("Invalid session or work-item identity; recovery blocked.");
+  const branchValidation = boundedActiveBranchEntries(entries);
+  if (branchValidation.exceededLimit) return blocked("Active branch exceeds the bounded recovery limit; recovery blocked.");
+  const branch = branchValidation.entries;
+  if (!branch) return blocked("Malformed active branch lineage; recovery blocked.");
+  const parentById = new Map<string, string | null>();
+  for (const branchEntry of branch) parentById.set(branchEntry.id, branchEntry.parentId);
+  const candidates: Array<{ entry: StoredLedgerEntry; entryId: string; snapshot: LedgerSnapshot }> = [];
+  for (const branchEntry of branch) {
+    const entry = branchEntry.entry;
     if (!isLedgerEntry(entry)) continue;
     const raw = entry.data;
     // Other work items may coexist in a session branch. A payload that cannot
@@ -301,20 +429,21 @@ export function reconstructActiveSnapshot(
     if (!isSnapshot(safeRaw)) return blocked("Invalid workflow ledger snapshot data; recovery blocked.");
     if (safeRaw.sessionId !== sessionId) return blocked("Cross-session workflow ledger snapshot; recovery blocked.");
     if (safeRaw.workItemId !== workItemId) return blocked("Workflow snapshot identity was altered by sanitization; recovery blocked.");
-    candidates.push({ entry, snapshot: freezeDeep(safeRaw) });
+    candidates.push({ entry, entryId: branchEntry.id, snapshot: freezeDeep(safeRaw) });
   }
   if (candidates.length === 0) return { status: "absent" };
 
-  const byGeneration = new Map<number, { entry: StoredLedgerEntry; snapshot: LedgerSnapshot }>();
-  const candidateById = new Map<string, { entry: StoredLedgerEntry; snapshot: LedgerSnapshot }>();
+  const byGeneration = new Map<number, { entry: StoredLedgerEntry; entryId: string; snapshot: LedgerSnapshot }>();
+  const candidateById = new Map<string, { entry: StoredLedgerEntry; entryId: string; snapshot: LedgerSnapshot }>();
   for (const candidate of candidates) {
     const prior = byGeneration.get(candidate.snapshot.generation);
     if (prior) return blocked("Conflicting duplicate workflow snapshot generation; recovery blocked.");
     byGeneration.set(candidate.snapshot.generation, candidate);
-    candidateById.set(candidate.entry.id, candidate);
+    candidateById.set(candidate.entryId, candidate);
   }
+  const parentStates = new Map<string, ParentChainState>();
   for (const candidate of candidates) {
-    if (!validParentChain(entriesById, candidate.entry)) {
+    if (!validParentChain(parentById, candidate.entryId, parentStates)) {
       return blocked("Missing or cyclic workflow snapshot branch root/parent lineage; recovery blocked.");
     }
     const predecessorId = candidate.snapshot.predecessorEntryId;
@@ -327,14 +456,267 @@ export function reconstructActiveSnapshot(
       if (predecessor.snapshot.generation + 1 !== candidate.snapshot.generation) {
         return blocked("Workflow snapshot generation is not monotonic; recovery blocked.");
       }
-      if (!hasAncestor(entriesById, candidate.entry, predecessorId)) {
-        return blocked("Workflow snapshot predecessor is off-branch; recovery blocked.");
-      }
     }
   }
-  const highest = [...candidates].sort((left, right) => right.snapshot.generation - left.snapshot.generation)[0];
+  const intervals = ancestryIntervals(parentById, parentStates);
+  for (const candidate of candidates) {
+    if (candidate.snapshot.generation === 1) continue;
+    const predecessorId = candidate.snapshot.predecessorEntryId;
+    if (predecessorId === null) return blocked("Workflow snapshot is missing its predecessor; recovery blocked.");
+    const candidateInterval = intervals.get(candidate.entryId);
+    const predecessorInterval = intervals.get(predecessorId);
+    if (!candidateInterval || !predecessorInterval
+      || predecessorInterval.start > candidateInterval.start
+      || candidateInterval.end > predecessorInterval.end) {
+      return blocked("Workflow snapshot predecessor is off-branch; recovery blocked.");
+    }
+  }
+  let highest = candidates[0];
+  for (let index = 1; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    if (candidate && highest && candidate.snapshot.generation > highest.snapshot.generation) highest = candidate;
+  }
   if (!highest) return { status: "absent" };
-  return { status: "ok", entryId: highest.entry.id, snapshot: highest.snapshot };
+  return { status: "ok", entryId: highest.entryId, snapshot: highest.snapshot };
+}
+
+/** The subset of ExtensionAPI needed to append a plain custom entry. */
+interface LedgerAppender {
+  appendEntry(customType: string, data?: unknown): void;
+}
+
+/** The public session getters needed to verify the active append lineage. */
+interface LedgerSessionManager {
+  getSessionId(): string;
+  getBranch(): readonly SessionEntry[];
+  getLeafEntry(): SessionEntry | undefined;
+}
+
+function appendBlocked(reason: string): never {
+  throw new Error(`Workflow snapshot append blocked: ${reason}`);
+}
+
+/** Validate the branch shape before deriving any successor metadata. */
+function validActiveBranch(entries: readonly SessionEntry[], leaf: SessionEntry | undefined): boolean {
+  if (!Array.isArray(entries)) return false;
+  const entryCount = entries.length;
+  // Check the cap before touching any entry. This also prevents a hostile
+  // array-like proxy from making validation iterate without a fixed bound.
+  if (!Number.isSafeInteger(entryCount) || entryCount < 0 || entryCount > MAX_ACTIVE_BRANCH_ENTRIES) return false;
+  const ids = new Set<string>();
+  let parentId: string | null = null;
+  for (let index = 0; index < entryCount; index += 1) {
+    const entry = entries[index];
+    if (!entry
+      || !isObject(entry)
+      || !nonEmptyString(entry.id)
+      || !nonEmptyString(entry.type)
+      || !nonEmptyString(entry.timestamp)
+      || (entry.parentId !== null && typeof entry.parentId !== "string")
+      || entry.parentId !== parentId
+      || ids.has(entry.id)) return false;
+    ids.add(entry.id);
+    parentId = entry.id;
+  }
+  if (entryCount === 0) return leaf === undefined;
+  if (!isObject(leaf)
+    || !nonEmptyString(leaf.id)
+    || !nonEmptyString(leaf.type)
+    || !nonEmptyString(leaf.timestamp)
+    || (leaf.parentId !== null && typeof leaf.parentId !== "string")) return false;
+  const branchLeaf = entries[entryCount - 1];
+  return branchLeaf !== undefined
+    && leaf.id === branchLeaf.id
+    && leaf.parentId === branchLeaf.parentId;
+}
+
+interface ExactComparisonState {
+  entries: number;
+  leftPath: WeakSet<object>;
+  rightPath: WeakSet<object>;
+}
+
+/**
+ * Compare the persisted payload itself, rather than a re-sanitized value.
+ *
+ * A returned acknowledgement is host-controlled, so this comparator never
+ * invokes a property getter: it reads only caught own-property descriptors.
+ * It rejects accessors, cycles, excessive depth, oversized strings, and a
+ * payload whose total own-property count exceeds the fixed comparison budget.
+ */
+function exactPersistedValue(left: unknown, right: unknown): boolean {
+  const state: ExactComparisonState = {
+    entries: 0,
+    leftPath: new WeakSet<object>(),
+    rightPath: new WeakSet<object>(),
+  };
+
+  const compare = (leftValue: unknown, rightValue: unknown, depth: number): boolean => {
+    const leftObject = typeof leftValue === "object" && leftValue !== null;
+    const rightObject = typeof rightValue === "object" && rightValue !== null;
+    if (!leftObject || !rightObject) {
+      if (typeof leftValue !== typeof rightValue) return false;
+      if (typeof leftValue === "string" && byteLength(leftValue) > MAX_STRING_LENGTH) return false;
+      // The canonical snapshot contains no executable or symbol values.
+      if (typeof leftValue === "function" || typeof leftValue === "symbol") return false;
+      return Object.is(leftValue, rightValue);
+    }
+    let enteredPath = false;
+    try {
+      if (Array.isArray(leftValue) !== Array.isArray(rightValue)) return false;
+      if (depth >= MAX_DEPTH) return false;
+      if (state.leftPath.has(leftValue) || state.rightPath.has(rightValue)) return false;
+      state.leftPath.add(leftValue);
+      state.rightPath.add(rightValue);
+      enteredPath = true;
+      if (Object.getPrototypeOf(leftValue) !== Object.getPrototypeOf(rightValue)) return false;
+      const leftKeys = Reflect.ownKeys(leftValue);
+      const rightKeys = Reflect.ownKeys(rightValue);
+      if (leftKeys.length > MAX_COLLECTION_LENGTH
+        || rightKeys.length > MAX_COLLECTION_LENGTH
+        || leftKeys.length !== rightKeys.length) return false;
+      const leftKeySet = new Set<PropertyKey>(leftKeys);
+      const rightKeySet = new Set<PropertyKey>(rightKeys);
+      if (leftKeySet.size !== leftKeys.length || rightKeySet.size !== rightKeys.length) return false;
+      for (const key of leftKeys) if (!rightKeySet.has(key)) return false;
+      state.entries += leftKeys.length;
+      if (state.entries > MAX_EXACT_PERSISTED_ENTRIES) return false;
+      for (const key of leftKeys) {
+        const leftDescriptor = Object.getOwnPropertyDescriptor(leftValue, key);
+        const rightDescriptor = Object.getOwnPropertyDescriptor(rightValue, key);
+        if (!leftDescriptor || !rightDescriptor
+          || leftDescriptor.get !== undefined
+          || leftDescriptor.set !== undefined
+          || rightDescriptor.get !== undefined
+          || rightDescriptor.set !== undefined
+          || leftDescriptor.enumerable !== rightDescriptor.enumerable
+          || !("value" in leftDescriptor)
+          || !("value" in rightDescriptor)
+          || !compare(leftDescriptor.value, rightDescriptor.value, depth + 1)) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (enteredPath) {
+        state.leftPath.delete(leftValue);
+        state.rightPath.delete(rightValue);
+      }
+    }
+  };
+
+  return compare(left, right, 0);
+}
+
+/** Copy only a bounded active branch; never consume a host-provided iterator. */
+function copyBoundedActiveBranch(entries: readonly SessionEntry[]): readonly SessionEntry[] {
+  if (!Array.isArray(entries)) return entries;
+  const entryCount = entries.length;
+  if (!Number.isSafeInteger(entryCount) || entryCount < 0 || entryCount > MAX_ACTIVE_BRANCH_ENTRIES) return entries;
+  const copy: SessionEntry[] = [];
+  for (let index = 0; index < entryCount; index += 1) {
+    copy.push(entries[index]!);
+  }
+  return copy;
+}
+
+/**
+ * Append one sanitized canonical snapshot and verify Pi advanced the active
+ * branch to the expected plain custom entry. This intentionally does not use
+ * custom messages or any context-injection API.
+ */
+export function appendWorkflowSnapshot(
+  pi: LedgerAppender,
+  sessionManager: LedgerSessionManager,
+  record: WorkflowRecord,
+  createdAt: string,
+): { entryId: string; snapshot: LedgerSnapshot } {
+  let sessionId: string;
+  let branch: readonly SessionEntry[];
+  let priorLeaf: SessionEntry | undefined;
+  try {
+    sessionId = sessionManager.getSessionId();
+    const activeBranch = sessionManager.getBranch();
+    // Keep a pre-append copy: structural callers may expose their backing
+    // array directly even though Pi's public getter currently returns a new
+    // path array. Avoid consuming a potentially hostile custom iterator.
+    branch = copyBoundedActiveBranch(activeBranch);
+    priorLeaf = sessionManager.getLeafEntry();
+  } catch {
+    appendBlocked("Unable to read session identity or active branch lineage.");
+  }
+  if (!validIdentity(sessionId)) appendBlocked("Session identity is invalid.");
+
+  let branchIsValid = false;
+  try {
+    branchIsValid = validActiveBranch(branch, priorLeaf);
+  } catch {
+    appendBlocked("Unable to read active branch lineage; append blocked.");
+  }
+  if (!branchIsValid) appendBlocked("Active branch lineage is malformed or inconsistent.");
+
+  let priorLeafId: string | null = null;
+  let branchIds: Set<string>;
+  try {
+    priorLeafId = priorLeaf?.id ?? null;
+    branchIds = new Set(branch.map((entry) => entry.id));
+  } catch {
+    appendBlocked("Unable to read active branch lineage; append blocked.");
+  }
+
+  const validation = validateWorkflowRecord(record);
+  if (!validation.ok) appendBlocked(validation.reason);
+  const canonicalRecord = validation.record;
+  const recovery = reconstructActiveSnapshot(branch, sessionId, canonicalRecord.workItemId);
+  if (recovery.status === "blocked") appendBlocked(recovery.reason);
+
+  const generation = recovery.status === "absent" ? 1 : recovery.snapshot.generation + 1;
+  if (!Number.isSafeInteger(generation)) appendBlocked("Workflow snapshot generation exhausted.");
+  const predecessorEntryId = recovery.status === "absent" ? null : recovery.entryId;
+  const snapshot = createLedgerSnapshot({
+    sessionId,
+    workItemId: canonicalRecord.workItemId,
+    generation,
+    predecessorEntryId,
+    createdAt,
+    record: canonicalRecord,
+  });
+
+  // ExtensionAPI.appendEntry is synchronous and returns no entry ID. Do not
+  // inspect or await a return value; the leaf check below is the commit
+  // acknowledgement and fail-closed boundary.
+  try {
+    pi.appendEntry(LEDGER_CUSTOM_TYPE, snapshot);
+  } catch {
+    appendBlocked("Unable to append the workflow snapshot.");
+  }
+
+  let acknowledgedEntryId: string | undefined;
+  try {
+    const newLeaf = sessionManager.getLeafEntry();
+    if (isObject(newLeaf) && isLedgerEntry(newLeaf)) {
+      // Capture every host-controlled property once, inside this boundary.
+      // The return path must not re-read a getter that changed after verify.
+      const leafId = newLeaf.id;
+      const leafTimestamp = newLeaf.timestamp;
+      const leafParentId = newLeaf.parentId;
+      const leafData = newLeaf.data;
+      if (nonEmptyString(leafId)
+        && nonEmptyString(leafTimestamp)
+        && leafId !== priorLeafId
+        && !branchIds.has(leafId)
+        && leafParentId === priorLeafId
+        && exactPersistedValue(leafData, snapshot)) {
+        acknowledgedEntryId = leafId;
+      }
+    }
+  } catch {
+    appendBlocked("Unable to verify the appended active-branch leaf.");
+  }
+  if (acknowledgedEntryId === undefined) {
+    appendBlocked("Appended leaf does not match the expected custom snapshot or active ancestry.");
+  }
+  return { entryId: acknowledgedEntryId, snapshot };
 }
 
 function changedBySanitization(value: unknown, seen = new WeakSet<object>()): boolean {

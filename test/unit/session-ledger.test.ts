@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   LEDGER_CUSTOM_TYPE,
+  appendWorkflowSnapshot,
   createCompletionCapsule,
   createLedgerSnapshot,
   projectWorkflowRecord,
@@ -82,6 +83,134 @@ test("conflicting, broken, or cross-session lineage fails closed", () => {
 
 test("absence is distinct from blocked recovery", () => {
   assert.deepEqual(reconstructActiveSnapshot([], "session-1", "work-1"), { status: "absent" });
+});
+
+test("candidate-free recovery rejects malformed active-branch ordering and roots", () => {
+  const root = customEntry("root", null, null, "unrelated");
+  const child = customEntry("child", "root", null, "unrelated");
+  for (const entries of [
+    [child, root],
+    [customEntry("orphan", "missing", null, "unrelated")],
+  ]) {
+    const result = reconstructActiveSnapshot(entries, "session-1", "work-1");
+    assert.equal(result.status, "blocked");
+    if (result.status === "blocked") assert.match(result.reason, /branch|lineage|root|parent|order/i);
+  }
+});
+
+test("recovery rejects malformed non-candidate entries beside a valid snapshot", () => {
+  const entries = [
+    customEntry("snapshot", null, snapshot(1)),
+    customEntry("disconnected", "missing", null, "unrelated"),
+  ];
+  const result = reconstructActiveSnapshot(entries, "session-1", "work-1");
+  assert.equal(result.status, "blocked");
+  if (result.status === "blocked") assert.match(result.reason, /branch|lineage|root|parent|order/i);
+});
+
+test("append adapter creates monotonic snapshots from the active branch and verifies the new leaf", () => {
+  const entries: SessionEntry[] = [];
+  const sessionManager = {
+    getSessionId: () => "session-1",
+    getBranch: () => [...entries],
+    getLeafEntry: () => entries.at(-1),
+  };
+  const pi = {
+    appendEntry(customType: string, data: unknown) {
+      entries.push(customEntry(`entry-${entries.length + 1}`, entries.at(-1)?.id ?? null, data, customType));
+    },
+  };
+
+  const first = appendWorkflowSnapshot(pi, sessionManager, workflowRecord(), "2026-09-03T00:00:01.000Z");
+  assert.equal(first.entryId, "entry-1");
+  assert.equal(first.snapshot.generation, 1);
+  assert.equal(first.snapshot.predecessorEntryId, null);
+
+  const second = appendWorkflowSnapshot(pi, sessionManager, workflowRecord(), "2026-09-03T00:00:02.000Z");
+  assert.equal(second.entryId, "entry-2");
+  assert.equal(second.snapshot.generation, 2);
+  assert.equal(second.snapshot.predecessorEntryId, "entry-1");
+  assert.equal(reconstructActiveSnapshot(entries, "session-1", "work-1").status, "ok");
+});
+
+test("append adapter fails closed when the host does not acknowledge the exact new leaf", () => {
+  const cases: Array<(snapshot: unknown) => SessionEntry | undefined> = [
+    () => undefined,
+    (data) => customEntry("wrong-parent", "unexpected", data),
+    () => customEntry("wrong-payload", null, { wrong: true }),
+  ];
+  for (const makeLeaf of cases) {
+    let leaf: SessionEntry | undefined;
+    assert.throws(() => appendWorkflowSnapshot(
+      { appendEntry(_customType, data) { leaf = makeLeaf(data); } },
+      {
+        getSessionId: () => "session-1",
+        getBranch: () => [],
+        getLeafEntry: () => leaf,
+      },
+      workflowRecord(),
+      "2026-09-03T00:00:01.000Z",
+    ), /append blocked/i);
+  }
+});
+
+test("append verification bounds hostile getters and cyclic returned payloads", () => {
+  for (const hostileLeaf of [
+    new Proxy({} as SessionEntry, { get() { throw new Error("getter trap"); } }),
+    (() => {
+      const data: Record<string, unknown> = {};
+      data.self = data;
+      return customEntry("entry-1", null, data);
+    })(),
+  ]) {
+    let leaf: SessionEntry | undefined;
+    assert.throws(() => appendWorkflowSnapshot(
+      { appendEntry() { leaf = hostileLeaf; } },
+      {
+        getSessionId: () => "session-1",
+        getBranch: () => [],
+        getLeafEntry: () => leaf,
+      },
+      workflowRecord(),
+      "2026-09-03T00:00:01.000Z",
+    ), /append blocked/i);
+  }
+});
+
+test("branch reconstruction fails closed when ancestry exceeds its safety bound", () => {
+  const entries: SessionEntry[] = [];
+  for (let index = 0; index < 5_000; index += 1) {
+    entries.push({
+      id: `entry-${index}`,
+      parentId: index === 0 ? null : `entry-${index - 1}`,
+      timestamp: "2026-09-03T00:00:00.000Z",
+      type: "custom",
+      customType: "unrelated",
+      data: null,
+    });
+  }
+  const result = reconstructActiveSnapshot(entries, "session-1", "work-1");
+  assert.equal(result.status, "blocked");
+  if (result.status === "blocked") assert.match(result.reason, /bound|limit|large/i);
+});
+
+test("append adapter refuses blocked ancestry and does not write", () => {
+  const entries = [
+    customEntry("entry-1", null, snapshot(1)),
+    customEntry("entry-2", "entry-1", snapshot(3, "missing")),
+  ];
+  let writes = 0;
+  assert.throws(() => appendWorkflowSnapshot(
+    { appendEntry() { writes += 1; } },
+    {
+      getSessionId: () => "session-1",
+      getBranch: () => entries,
+      getLeafEntry: () => entries.at(-1),
+    },
+    workflowRecord(),
+    "2026-09-03T00:00:03.000Z",
+  ), /blocked|predecessor/i);
+  assert.equal(writes, 0);
 });
 
 test("ledger serialization redacts sensitive keys and secret-like values before persistence", () => {
