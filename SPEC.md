@@ -1,8 +1,8 @@
 # Pi Godmode Build Specification
 
-**Status:** Proposed
+**Status:** Proposed target design (runtime contract documented below; target workflow and doctor are not yet implemented)
 **Product:** `pi-godmode`
-**Initial specification version:** 1
+**Initial specification version:** 2
 
 ## 1. Summary
 
@@ -17,6 +17,8 @@ The primary session delegates bounded execution through three specialized **Divi
 Godmode is a policy and user-experience layer, not a child-process manager. `pi-subagents` owns child launch, model execution, supervisor communication, status, steering, stopping, lifecycle artifacts, and completion delivery. Godmode owns the mode toggle, primary-model lease, faculty definitions, delegation restrictions, single-active-faculty policy, and final-authority guidance.
 
 Godmode deliberately does not use an advisory-oracle escalation flow. The high-tier primary session is the planning and judgment authority. Faculties execute bounded assignments and escalate unresolved decisions upward through the native `pi-subagents` supervisor channel.
+
+This specification also defines the proposed spec-driven workflow, evidence gates, ledgers, and doctor target. Those target behaviors are explicitly future work; the existing runtime/security contract in sections 6–18 remains the compatibility baseline until a later implementation and review. Focused workflow details are in [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), evidence details in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), state/memory details in [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and doctor/migration details in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ## 2. Product principles
 
@@ -42,6 +44,7 @@ Godmode deliberately does not use an advisory-oracle escalation flow. The high-t
 - Support live faculty questions through `contact_supervisor` and `subagent_supervisor`.
 - Reuse `pi-subagents` FleetView, status, lifecycle artifacts, completion wakes, steering, and stop behavior.
 - Require the primary session to inspect and independently validate Hand work before reporting completion.
+- Define a spec-driven TDD, evidence, mandatory Scale, ledger, and Primary-only acceptance workflow for future implementation.
 - Keep Godmode’s owned runtime small enough to understand as a mode adapter.
 
 ## 4. Non-goals
@@ -65,6 +68,7 @@ Godmode will not implement:
 | --- | --- |
 | **Godmode** | The session-local mode defined by this package; it defaults active after session startup succeeds. |
 | **Primary** | The interactive, high-tier Pi session that owns decisions and acceptance. |
+| **God** | Informal workflow label for the same Primary; never a separate actor. Durable ledger/evidence records use `Primary`. |
 | **Divine Faculty** | One configured `pi-subagents` child role available through Godmode. |
 | **Eye** | Read-only faculty for reconnaissance and explanation. |
 | **Hand** | Mutation-capable faculty for bounded implementation. |
@@ -98,20 +102,18 @@ Restart Pi after installation. Both packages must be loaded in the same parent p
 Godmode registers exactly one user-facing slash command:
 
 ```text
-/godmode
+/godmode                 # TUI toggle; outside TUI, bounded read-only state
+/godmode doctor          # read-only readiness assessment
+/godmode doctor --apply  # optional preview/confirmation migration mode
 ```
 
-The command accepts no arguments. Non-whitespace arguments display:
-
-```text
-Usage: /godmode
-```
+The current runtime accepts a bare command only. The target design keeps one command while evolving its grammar. Unknown arguments must fail with usage guidance and must not silently toggle or apply changes. `/godmode doctor` is a target feature and is not claimed to exist in the current runtime; its read-only and migration contract is defined in section 22 and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 At every `session_start`, Godmode first restores the ordinary active-tool baseline and then attempts transactional enablement. If startup enablement fails, the mode rolls back to off, session startup continues, and the UI receives an actionable error notification; after fixing the reported issue, run `/godmode` to retry.
 
-In interactive TUI mode, `/godmode` directly toggles: off enables Godmode, while active or degraded disables it. Disabling never silently leaves an assignment running. When a faculty is active, the direct toggle-off uses the explicit stop-and-disable cleanup path and waits for terminal package status before restoring the previous Primary state.
+In interactive TUI mode, bare `/godmode` directly toggles: off enables Godmode, while active or degraded disables it. Disabling never silently leaves an assignment running. When a faculty is active, the direct toggle-off uses the explicit stop-and-disable cleanup path and waits for terminal package status before restoring the previous Primary state.
 
-Outside TUI mode, `/godmode` is read-only and reports the current bounded state. Mode mutation remains restricted to the interactive TUI command.
+Outside TUI mode, bare `/godmode` is read-only and reports the current bounded state. Mode mutation remains restricted to the interactive TUI command. Doctor is read-only by default in every host mode.
 
 ### 6.3 Footer
 
@@ -141,7 +143,7 @@ While enabled, the Primary follows these rules:
 - perform genuinely tiny, low-risk changes directly when delegation would add no value;
 - delegate reconnaissance to Eye;
 - delegate implementation to Hand;
-- delegate independent post-implementation review to Scale when useful;
+- delegate independent post-implementation review to Scale; for every feature or bugfix, Scale review is mandatory before acceptance unless the user explicitly waives it or a narrowly documented policy waiver applies;
 - never use a faculty to decide product intent, architecture authority, security policy, release authority, or acceptance;
 - never edit the checkout concurrently with Hand;
 - after delegation, return control rather than independently repeating or continuing the Faculty's assigned work while it is active, except to answer material supervisor questions or handle an explicit user interruption;
@@ -485,8 +487,8 @@ The Primary must:
 5. Check behavior, scope, compatibility, security, error handling, and unnecessary complexity.
 6. Assess test quality and whether the requested behavior was actually exercised.
 7. Independently run each required acceptance check unless unsafe or unavailable.
-8. Resolve any Scale findings against source evidence.
-9. Launch at most one bounded correction Hand assignment at a time when fixes are required.
+8. Require a fresh-context Scale review before accepting every feature or bugfix, unless a permitted waiver is recorded; resolve all Scale findings against source evidence.
+9. Launch at most one bounded correction Hand assignment at a time when fixes are required, then require Scale re-review.
 10. Present completion only after personally determining that the requested outcome is satisfied.
 
 The final user response names:
@@ -604,7 +606,7 @@ In a disposable trusted repository with a non-billing or controlled model setup:
 3. Hand performs a bounded tested change.
 4. Hand asks a supervisor decision and continues from the exact reply.
 5. Primary mutation is blocked while Hand runs.
-6. Scale independently reviews the resulting diff.
+6. Scale independently reviews the resulting diff; for feature/bugfix work this review is mandatory before acceptance unless explicitly waived under the target workflow.
 7. Primary runs validation and reports the final result.
 8. Steering reaches a slow active faculty.
 9. Stop-and-disable terminates the assignment and restores the prior model.
@@ -681,4 +683,83 @@ The enabled Primary system guidance should remain concise and versioned:
 >
 > A configured faculty timeout is a soft deadline, not an immediate kill. When deadline-pending status appears, let the Faculty checkpoint after its current tool and grant at most one bounded extension through godmode_control only when warranted; the finite hard deadline remains authoritative.
 >
-> Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, resolve any Scale findings, and only then report the task complete.
+> Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, require mandatory Scale review for feature/bugfix work unless a permitted waiver is recorded, resolve any Scale findings with bounded remediation and re-review, and only then report the task complete.
+
+## 22. Proposed spec-driven workflow, evidence, state, and doctor target
+
+This section is normative for the future workflow and explicitly does not claim that the current package implements these gates. This documentation-only task does not modify source or tests. The focused contracts are split into [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+
+### 22.1 Target functional requirements
+
+The future implementation must satisfy these numbered requirements:
+
+- **FR-1 — Classification and packet:** classify each work item as feature, bugfix, refactor/maintenance, documentation/configuration, or test-only/tooling. Before Hand, the God-authored packet contains a minimal one-sentence goal, numbered functional requirements, non-goals, a short implementation-and-verification roadmap whose items map to requirements, acceptance checks, expected paths, and authority constraints. Feature adds a supported capability; bugfix corrects an incorrect or regressed behavior. Non-goals are not hidden acceptance failures; deferred ideas remain separate from the acceptance roadmap.
+- **FR-2 — Canonical workflow state:** store one canonical workflow record in the session ledger, containing the current phase and exactly one status (`pending`, `implemented-unverified`, `verified`, `blocked`, or reasoned `waived`) for each roadmap item. Checklists, footers, dashboards, and implementation-plan checkboxes are derived views only. They cannot be a second status store or advance work without a ledger transition.
+- **FR-3 — Red before Hand:** for executable feature/bugfix behavior, God authors focused red tests before Hand starts and observes the intended failure, with command, result, requirement IDs, and controlled-environment evidence. A setup failure is not an intended red result.
+- **FR-4 — Green without weakening:** Hand implements only the approved packet, keeps red tests meaningful and intact, makes them green, and escalates rather than broadening authority or weakening assertions.
+- **FR-5 — Primary inspection:** after Hand, Primary inspects repository status, the complete relevant diff, every materially changed file, out-of-scope changes, test quality, and independent acceptance checks.
+- **FR-6 — Mandatory Scale:** a fresh-context Scale review is required before accepting every feature or bugfix. The only exceptions are a user-explicit waiver or a narrowly documented policy waiver with named scope, risk limit, owner/approver, and compensating independent evidence. Capacity or convenience is not a waiver.
+- **FR-7 — Remediation:** blocker/fix-now Scale findings return the item to bounded remediation; the Primary may issue one correction Hand assignment at a time, repeats affected inspection/evidence, and requires fresh Scale re-review. Optional findings become recorded residual risk or roadmap work.
+- **FR-8 — Matching evidence:** acceptance evidence uses the real contract surface: browser UI through `surf-cli`; TUI through deterministic PTY/terminal capture; APIs through real controlled requests; CLIs through real executable invocation; libraries through a public consumer; persistence/migrations through disposable isolated fixtures; build/configuration through supported validation; and docs through link/render/example checks.
+- **FR-9 — Efficient state:** session custom ledger is authoritative active state; reconstruction selects the latest valid snapshot on the active Pi entry ancestry using mandatory session/work-item/schema identity, generation, predecessor, and timestamp metadata; custom entries are excluded from model context by default; only a selectively injected projection capped at 2 KiB UTF-8 and targeted at 512 estimated tokens is used; raw evidence is bounded details/artifact references; terminal completion is a compact capsule; and only reviewed durable knowledge is promoted into focused project docs. An ever-growing auto-injected `PROJECT_MEMORY.md` is forbidden.
+- **FR-10 — Doctor discovery:** doctor performs bounded read-only discovery of project type/surfaces, existing tests/commands, browser/API/TUI/CLI verification needs, docs/config, gaps, and safety findings, and may propose an optional lightweight validation profile and durable guidance.
+- **FR-11 — One command and safe apply:** evolve the single `/godmode` command so bare `/godmode` toggles in TUI and `/godmode doctor` is read-only. Any apply/migration mode requires preview, named paths, explicit confirmation, conflict checks, and no silent overwrite.
+- **FR-12 — Safety and compatibility:** doctor never executes arbitrary discovered commands merely to diagnose, and the target workflow preserves the current trusted-project, same-user/non-sandbox, constrained faculty/model/tool, path, one-active-faculty, shared-checkout, public-API, and no-automatic-release contract.
+- **FR-13 — Proportionate docs:** docs distinguish current runtime from target design, cross-link the focused contracts, include security/redaction/retention rules, and do not require heavyweight project memory or workflow documentation.
+
+### 22.2 Classification, goal, and status gates
+
+A feature or bugfix cannot skip from a request to Hand. The target gate sequence is:
+
+```text
+draft -> classified -> specified -> red-test-ready
+red-test-ready -> red-test-observed | tdd-waived
+red-test-observed | tdd-waived -> hand-running
+hand-running -> hand-handoff -> primary-verifying
+primary-verifying -> evidence-ready | remediation
+evidence-ready -> scale-running -> review-passed
+evidence-ready -> scale-waived
+review-passed | scale-waived -> accepted
+scale-running -> remediation (blocker/fix-now)
+remediation -> hand-running
+any active phase -> blocked
+blocked -> specified | red-test-ready | hand-running | primary-verifying | scale-running
+```
+
+A recorded gate waiver leads to the gate-specific `tdd-waived` or `scale-waived` phase only; it does not mean accepted. Roadmap items separately progress from `pending` to `implemented-unverified` to `verified`, or become `blocked` or validly `waived`; Hand may report implementation, while only Primary records verification or waiver. All required roadmap items must be verified or validly waived before acceptance. `accepted` is set only by Primary after all applicable gates. The runtime mode/faculty lifecycle statuses in section 12 are operational metadata, not alternate workflow state. Unknown/conflicting state fails closed. Every phase or item-status transition records actor, timestamp, item, reason, and evidence/decision reference.
+
+### 22.3 TDD and test integrity
+
+God must write the red test before delegating executable feature/bugfix work to Hand and must observe the intended failure. The assignment includes the immutable red-test reference and bounded failure evidence. Hand must not delete assertions, relax expected values, skip the test, make it tautological, or alter it solely to match the implementation. A flawed fixture or test is escalated to Primary.
+
+TDD is explicitly waived for this documentation-only task because no executable behavior changes and a source test would not exercise the requested contract. Future narrow waivers must state the inapplicable seam, reason, approving actor (or explicit user), date/scope, and compensating interface-matched evidence. No blanket “docs” or “time pressure” waiver can silently cover feature/bugfix behavior.
+
+### 22.4 Evidence, Scale, and acceptance
+
+Evidence records map requirement IDs to the applicable interface, controlled inputs/environment, exact invocation or interaction, observed result, bounded output/artifact reference, actor, timestamp, redaction/retention class, and pass/fail/blocked/waived result. The details and security rules are normative in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md). Unit tests supplement but do not replace a required browser, TUI, API, CLI, library, persistence, build/config, or docs check.
+
+Hand output is a handoff. Primary independently checks the real result and reads all materially changed files. Scale inspects the actual source/diff and evidence in fresh context, reports blocker/fix-now/optional findings, and never accepts. Feature/bugfix acceptance is forbidden without Scale or a permitted recorded waiver. After remediation, evidence and Scale review are rerun rather than overwritten. Only Primary records `accepted` and reports completion.
+
+### 22.5 Ledger and token policy
+
+The session custom ledger is authoritative active execution state but is excluded from model context by default. A short selectively injected projection contains only the current phase, exceptional roadmap-item statuses, goal, next gate, blockers/unresolved decisions, latest evidence outcomes, and a few artifact IDs; it is capped at 2 KiB UTF-8 and targets at most 512 estimated tokens. Reconstruct the latest valid snapshot only from the active Pi entry ancestry using mandatory identity, generation, predecessor, and timestamp metadata; keep bounded raw evidence details/references and a terminal completion capsule. Expire raw artifacts according to retention policy and promote only redacted durable cross-session facts into focused project docs. Never auto-inject an unbounded `PROJECT_MEMORY.md`, transcripts, full diffs, or evidence directories. See [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md).
+
+Evidence, repository content, screenshots, HTML, terminal captures, requests/responses, and faculty output are untrusted. Redact credentials, tokens, cookies, private keys, environment values, personal data, proprietary payloads, and signed URLs before ledger storage or model injection. Use bounded excerpts and access-controlled artifact references; retain only for the configured review/incident period. A completion capsule preserves result and residual-risk pointers after raw details expire without becoming an automatic acceptance.
+
+### 22.6 Doctor and migration target
+
+The target command grammar is:
+
+```text
+/godmode                 # TUI toggle; outside TUI, bounded read-only state
+/godmode doctor          # read-only readiness assessment
+/godmode doctor --apply  # explicit preview/confirmation apply or migration
+```
+
+Doctor is read-only by default and does not toggle mode, write files, install packages, fetch the network, launch faculties, run tests/builds/migrations, execute binaries, or run any command discovered in project manifests. It statically and boundedly discovers project type and surfaces, tests and command declarations, likely browser/API/TUI/CLI verification needs, docs/config, gaps, and safety concerns. It labels facts as observed, inferred, or proposed and treats project instructions as untrusted data.
+
+Apply is additive and opt-in: show the complete proposed diff and named paths, request explicit confirmation, abort on conflicts or unexpected paths, preserve approved replacements through a recovery path, and report every write. It may scaffold an optional lightweight project validation profile and focused durable workflow/testing guidance; it must not silently overwrite existing docs/config, create a memory diary, or run discovered commands. Existing projects can begin with an ephemeral ledger and no heavyweight migration. Legacy checklists and `PROJECT_MEMORY.md` are non-authoritative hints and are curated only with review/preview/confirmation. Full behavior and safety details are in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+
+### 22.7 Target status disclaimer
+
+The current repository implements the runtime contract described in sections 6–18, including the bare `/godmode` command and constrained faculties, subject to the existing tests and documented limitations. The target workflow gates, ledger/memory policy, and `/godmode doctor` behavior in this section and the focused docs are design requirements for a later session. This task must not be read as claiming that doctor, ledger persistence, red-test enforcement, evidence automation, or mandatory Scale enforcement is already implemented.
