@@ -1,6 +1,6 @@
 # Temporary implementation plan: spec-driven Godmode workflow
 
-> **Temporary future-work artifact.** This file is an ordered plan for a later implementation session. The present task only rewrites documentation and must not implement these phases. Delete this file when the deletion criterion at the end is satisfied.
+> **Temporary implementation tracker.** Implementation is in progress. Delete this file when the deletion criterion at the end is satisfied. Checked items denote reviewed, tested behavior already merged to `main`; unchecked compound items may contain partial groundwork but are not complete.
 
 ## Target requirements and acceptance traceability
 
@@ -24,6 +24,16 @@ The normative details are in [`SPEC.md`](./SPEC.md), [`docs/WORKFLOW.md`](./docs
 
 ## Ordered phases
 
+### Implementation checkpoint for the next session
+
+Completed and pushed to `main`:
+
+- `ac23655` — canonical workflow types, audited immutable phase/roadmap transitions, Primary-only authority validation, derived checklist views, active-branch snapshot reconstruction, bounded sanitization/projection, completion capsules, and focused tests.
+- `ddde101` — verified plain-custom-entry snapshot appends, monotonic predecessor lineage, complete bounded branch validation, hostile getter/cycle handling, and negative recovery/acknowledgement tests.
+- Independent validation at the checkpoint: `npm run typecheck`, `npm test` (65 passing), `git diff --check`, complete Primary inspection, and final Scale review with no blocker/fix-now findings.
+
+Next session should resume **Phase 0 fixture coverage and the unchecked Phase 1 persistence integration work**. In particular: bind recovery to Pi session lifecycle, define fork-successor behavior, add omission-from-context/expiry/stale-recovery tests, and finish bounded evidence retention. Do not begin Phase 2 admission gates until the Phase 1 exit criteria are met.
+
 ### Phase 0 — Baseline and contract fixtures
 
 - [ ] Record current runtime behavior and compatibility constraints from `SPEC.md`; do not alter `src/`, tests, package manifests, lockfiles, or git state until a later approved phase.
@@ -34,11 +44,11 @@ The normative details are in [`SPEC.md`](./SPEC.md), [`docs/WORKFLOW.md`](./docs
 
 ### Phase 1 — Canonical work-item state and ledgers
 
-- [ ] Implement one canonical workflow record and transition validator: one current phase plus one status per requirement-linked roadmap item, with runtime mode/faculty lifecycle kept as separate operational metadata.
-- [ ] Implement session custom ledger as active authority; append-only branch snapshots must carry session/work-item/schema identity, monotonic generation, predecessor entry ID, and timestamp, and reconstruction must resolve the latest valid snapshot only on the active Pi entry ancestry. Add bounded evidence references, a terminal completion capsule, and an active projection excluded by default from model context and capped at 2 KiB UTF-8 (target ≤512 estimated tokens).
-- [ ] Implement derived checklist/footer views and conflict/unknown-state fail-closed behavior; do not add a second status store.
-- [ ] Implement redaction and retention hooks before raw evidence can be persisted.
-- [ ] Primary authors red unit/integration tests for transitions, derived views, the deterministic 2 KiB projection cap, omission from context, active-branch selection, fork inheritance and successor creation, monotonic generations, missing/cross-branch predecessors, duplicate/conflicting snapshots, redaction, expiry, and stale-snapshot recovery. Observe failures before Hand.
+- [x] Implement one canonical workflow record and transition validator: one current phase plus one status per requirement-linked roadmap item, with runtime mode/faculty lifecycle kept as separate operational metadata.
+- [ ] Implement session custom ledger as active authority; append-only branch snapshots must carry session/work-item/schema identity, monotonic generation, predecessor entry ID, and timestamp, and reconstruction must resolve the latest valid snapshot only on the active Pi entry ancestry. Add bounded evidence references, a terminal completion capsule, and an active projection excluded by default from model context and capped at 2 KiB UTF-8 (target ≤512 estimated tokens). *(Core snapshot creation/reconstruction, verified append, capsule, and 2 KiB projection are complete; lifecycle binding and explicit context-omission coverage remain.)*
+- [ ] Implement derived checklist/footer views and conflict/unknown-state fail-closed behavior; do not add a second status store. *(The derived checklist API and fail-closed validation are complete; workflow footer integration remains.)*
+- [ ] Implement redaction and retention hooks before raw evidence can be persisted. *(Bounded recursive redaction is complete; retention/expiry hooks remain.)*
+- [ ] Primary authors red unit/integration tests for transitions, derived views, the deterministic 2 KiB projection cap, omission from context, active-branch selection, fork inheritance and successor creation, monotonic generations, missing/cross-branch predecessors, duplicate/conflicting snapshots, redaction, expiry, and stale-snapshot recovery. Observe failures before Hand. *(Unit red/green coverage exists for transitions, views, projection bounds, branch selection/integrity, generations/predecessors, conflicts, redaction, and hostile append acknowledgement; omission, fork successor, expiry, stale recovery, and lifecycle integration remain.)*
 - [ ] Validation/evidence: deterministic unit tests, serialization round trips, bounded-storage fixtures, sanitized artifact inspection, and a controlled restart/recovery scenario.
 - **Exit:** FR-2 and FR-9 are evidenced and a handoff can be recovered without injecting full history.
 
