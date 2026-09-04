@@ -17,6 +17,20 @@ Keep one user-facing slash command:
 
 Bare `/godmode` keeps its current TUI toggle semantics: off enables, active/degraded disables, and an active faculty follows the explicit stop-and-disable cleanup path. Outside the TUI it remains non-mutating. `doctor` is always read-only by default and must not toggle Godmode, change models/tools, create files, install packages, alter configuration, launch faculties, or run project commands.
 
+### Model-facing assessment and AI-led migration
+
+The active model-facing tool is intentionally smaller than the slash command:
+
+```json
+{ "action": "assess" }
+```
+
+`godmode_doctor` accepts only that action. The runtime supplies the current trusted session checkout and returns a bounded model projection rooted at `.`, preserving observed, inferred, and proposed distinctions, candidates, summaries, limits, status, and safety findings while omitting the absolute root, root identity, compatibility aliases, and the deterministic rendered blob. It is read-only and cannot apply, write, delete, execute commands, or accept an approval value. If no session checkout controller is available, it fails closed.
+
+For an existing-project migration or modernization, the Primary runs `godmode_doctor` first, delegates Eye for bounded local-project research with no web/network access, synthesizes an exact plan naming files to create, modify, archive, or delete plus checks and risks, and stops for explicit user approval of that exact plan. After approval, custom changes or deletions use the normal gated workflow and a bounded Hand assignment with exact `expectedPaths`; ambiguous user-owned files stay unchanged. Legacy status is never imported as authority; checklist and memory files are hints only and never authority. The tool's Eye recommendation is research guidance, not mutation permission.
+
+This model-facing flow is distinct from the existing slash-command preview/token scaffolding flow:
+
 `--apply` returns a read-only preview, cryptographic short-lived token, exact named operations, and a complete bounded proposed diff. It writes nothing. Direct preview callers may inspect untrusted projects because preview is read-only, but the registered command requires `context.isProjectTrusted?.() === true`; missing trust is denial. Only `--confirm <token>` can apply after an affirmative trusted-project proof, explicit host idle proof (`isIdle === true`), and explicit no-active-faculty proof (`activeFaculty: null`); missing or false proofs are denial, and an active faculty is refused. `--replace` is required for an existing target; confirmation never silently overwrites. Replacement results provide an expiring, process-local recovery token; an unproven recovery retains that same token and backup for retry until TTL. The read-only doctor render keeps `readOnly: true` and `applyAvailable: false`, and reports `apply: available only through explicit preview and confirmation`; effectful apply remains separately gated.
 
 The shipped host command handler provides the supported non-TUI CLI-like invocation with the same read-only default and explicit confirmation semantics. Unknown subcommands/options fail with usage guidance; they do not fall back to toggle behavior.
@@ -78,7 +92,7 @@ Migration is additive and opt-in:
 2. Use `/godmode doctor --apply` to inspect a bounded preview. The preview is read-only and includes candidate legacy hints, all named operations, a digest, and a one-time token.
 3. Confirm only the displayed token. The registered command requires affirmative project trust and explicit host idle proof; all root/parent/target identities and legacy hint hashes must still match.
 4. Existing targets require a separate exact `--replace` preview. Replacement creates an owner-only OS-temp backup and returns a process-local recovery token. A post-write failure first triggers automatic verified rollback; if that cannot be proven, the same bounded token and backup are retained and exposed. Recovery consumes the token and removes the backup only after target bytes and cwd restoration are fully proven. A recovery rename that completed before sync/verification/cwd failure can be safely finalized by retry; an unrelated generated-target mismatch is refused but retains the token until TTL.
-5. Legacy `PROJECT_MEMORY.md`, `CHECKLIST.md`, `TODO.md`, `STATUS.md`, and `.godmode/checklist.json` are bounded, no-follow, untrusted hint sources. Their source files are never modified, commands remain inert, and no canonical phase/status/acceptance is imported.
+5. Legacy `PROJECT_MEMORY.md`, `CHECKLIST.md`, `TODO.md`, `STATUS.md`, and `.godmode/checklist.json` are bounded, no-follow, untrusted hint sources. Their source files are never modified, commands remain inert, and no canonical phase/status/acceptance is imported. Even when the user explicitly approves an exact legacy deletion, it is performed only by a bounded Hand assignment through the normal gated workflow with exact `expectedPaths`; `DoctorApplyManager` never deletes legacy files.
 6. Keep generated files small and redacted; do not replace existing workflow docs silently.
 7. Add work items gradually. For feature/bugfix items, start at classification/specification, author and observe red tests before Hand, collect interface-matched evidence, and require Scale before Primary acceptance.
 8. Retain existing tests and commands as candidates until the Primary confirms their semantics. Do not mark a command as an evidence gate solely because doctor discovered it.

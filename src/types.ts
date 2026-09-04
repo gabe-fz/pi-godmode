@@ -316,6 +316,38 @@ export interface DoctorReport {
   rendered: string;
 }
 
+/** The model-facing doctor recommendation is deliberately descriptive: it
+ * points the Primary at local research but grants no mutation authority. */
+export interface DoctorResearchRecommendation {
+  faculty: "eye";
+  scope: "local-project";
+  instruction: string;
+}
+
+/** Relative, read-only projection of a deterministic DoctorReport.  The
+ * projection intentionally drops root identity, compatibility aliases, and
+ * rendered output before crossing the model-facing boundary. */
+export interface DoctorModelReport {
+  schema: "godmode-doctor-model";
+  schemaVersion: 1;
+  status: DoctorStatus;
+  readOnly: true;
+  root: ".";
+  limits: DoctorLimits;
+  summary: DoctorReportSummary;
+  projectTypes: DoctorProjectType[];
+  surfaces: DoctorSurface[];
+  testCandidates: DoctorTestCandidate[];
+  commands: DoctorCommandCandidate[];
+  docsConfig: DoctorDocConfigItem[];
+  verificationNeeds: DoctorVerificationNeed[];
+  gaps: DoctorFinding[];
+  safetyFindings: DoctorFinding[];
+  proposals: DoctorProposal[];
+  researchRecommendation: DoctorResearchRecommendation;
+  nextActions: string[];
+}
+
 /** Phase 6 apply types are re-exported here for callers that keep all
  * authority-bearing data shapes in the canonical types module. */
 export type {

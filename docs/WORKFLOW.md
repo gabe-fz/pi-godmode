@@ -2,6 +2,12 @@
 
 > **Shipped behavior:** The normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence and an all-surface interface-evidence matrix, binds Scale reviews to the exact latest completed run, enforces bounded waivers, invalidates stale gate evidence through capped remediation before fresh inspection and evidence, and provides bounded doctor diagnosis plus previewed allowlisted apply/recovery. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md). Repository-specific controlled interface checks are described in §12; this document does not claim unsupported browser or HTTP execution.
 
+## AI-led migration flow
+
+When the request is to migrate or modernize an existing project, the Primary first invokes the read-only model-facing `godmode_doctor` with `{ "action": "assess" }`. The tool supplies a bounded relative assessment only; it does not mutate or delete files and never imports legacy status as authority. The Primary then delegates Eye for bounded local-project research with no web/network access, synthesizes an exact plan naming files to create, modify, archive, or delete together with checks and risks, and stops to request explicit user approval of that exact plan. After approval, custom changes and exact-approved deletions proceed only through the normal gated workflow and Hand with exact `expectedPaths`; ambiguous user-owned files remain unchanged. The Primary independently inspects the result, gathers interface evidence, runs Scale, resolves findings, and accepts only after all gates pass.
+
+`godmode_doctor` is distinct from the existing `/godmode doctor --apply` slash-command scaffolding flow. The model tool is read-only assessment only; slash `--apply` remains a read-only preview/token path for the two exact allowlisted scaffolding targets. `DoctorApplyManager` is not a legacy deletion mechanism.
+
 ## 1. Authority and unit of work
 
 The **Primary** is the only authority for user intent, product scope, architecture, security/data policy, dependencies, migrations, release actions, review, acceptance, and user communication. Ledger and evidence records use the canonical actor name `Primary`. Eye, Hand, and Scale execute bounded assignments and escalate material ambiguity through the supervisor; they do not invent authority.

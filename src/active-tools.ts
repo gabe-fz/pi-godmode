@@ -3,7 +3,7 @@ export interface ActiveToolsHost {
   setActiveTools(names: string[]): void;
 }
 
-const GODMODE_TOOLS = ["godmode_delegate", "godmode_workflow", "godmode_control"] as const;
+const GODMODE_TOOLS = ["godmode_delegate", "godmode_workflow", "godmode_doctor", "godmode_control"] as const;
 const REPLACED_TOOLS = ["subagent", "subagent_wait"] as const;
 
 export class ActiveToolLease {

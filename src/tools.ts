@@ -297,8 +297,16 @@ export const ControlSchema = Type.Object({
   extensionMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SUPERVISOR_EXTENSION_MS })),
 }, { additionalProperties: false });
 
+/** Read-only model-facing assessment. All checkout selection, command, and
+ * authority inputs are intentionally absent; the trusted runtime supplies the
+ * current session checkout when the tool executes. */
+export const DoctorSchema = Type.Object({
+  action: StringEnum(["assess"] as const),
+}, { additionalProperties: false });
+
 export type DelegateParams = Static<typeof DelegateSchema>;
 export type ControlParams = Static<typeof ControlSchema>;
+export type DoctorParams = Static<typeof DoctorSchema>;
 export type WorkflowParams = Static<typeof WorkflowSchema>;
 
 const WORKFLOW_REQUIREMENT_ID = /^FR-[1-9]\d*$/u;
@@ -1468,6 +1476,9 @@ export function registerGodmodeTools(
   pi: ExtensionAPI,
   mode: GodmodeMode,
   workflowController?: { execute(params: WorkflowParams | Record<string, unknown>): WorkflowActionResult },
+  /** Kept as a separate seam so small host/test constructions can register
+   * every model-facing tool without constructing the session doctor. */
+  doctorController?: { assess(): unknown },
 ): void {
   pi.registerTool({
     name: "godmode_delegate",
@@ -1479,6 +1490,23 @@ export function registerGodmodeTools(
       const result = await mode.delegate(params);
       const completionNotice = "Faculty launched asynchronously. Do not independently repeat or continue the Faculty's assigned work while it is active. Do not call subagent_wait or poll; return control and wait for automatic completion delivery.";
       return { content: [{ type: "text", text: `${text(result)}\n\n${completionNotice}` }], details: result };
+    },
+  });
+
+  // Registration is unconditional: the active-tool lease controls exposure,
+  // while an unavailable session controller fails closed at execution time.
+  pi.registerTool({
+    name: "godmode_doctor",
+    label: "Assess Project",
+    description: "Run a bounded read-only assessment of the current trusted session checkout for migration planning. The result is a relative model projection with observed, inferred, and proposed data, safety findings, inert candidates, limits, status, and next actions. It never accepts a path, command, model, network, write, apply, delete, or approval input; use Eye for bounded local-project research (no web/network) and never import legacy status as authority.",
+    promptSnippet: "For migration or modernization, run this read-only assessment first, then delegate Eye for bounded local-project research (no web/network); synthesize exact files to create, modify, archive, or delete, checks, and risks, and stop for explicit user approval before normal gated Hand changes.",
+    parameters: DoctorSchema,
+    async execute(_toolCallId, params) {
+      if (params.action !== "assess" || Object.keys(params).length !== 1) throw new Error("godmode_doctor accepts only { action: \\\"assess\\\" }.");
+      if (!doctorController) throw new Error("godmode_doctor is unavailable without an active session checkout context.");
+      const result = doctorController.assess();
+      if (typeof result !== "object" || result === null || Array.isArray(result)) throw new Error("godmode_doctor assessment failed closed: invalid result.");
+      return { content: [{ type: "text", text: text(result) }], details: result };
     },
   });
 
