@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initializeGodmodeSession, toggleGodmodeTui } from "../../src/extension-helpers.ts";
+import { registerWorkflowLifecycle } from "../../src/workflow-lifecycle.ts";
 import type { GodmodeSnapshot } from "../../src/types.ts";
 
 function snapshot(phase: GodmodeSnapshot["phase"], active = false): GodmodeSnapshot {
@@ -20,6 +21,20 @@ function snapshot(phase: GodmodeSnapshot["phase"], active = false): GodmodeSnaps
     } : {}),
   };
 }
+
+test("workflow lifecycle registration binds every session boundary behaviorally", () => {
+  const events: string[] = [];
+  const pi = {
+    appendEntry() {},
+    on(event: string) { events.push(event); },
+  };
+  registerWorkflowLifecycle(pi as never, {
+    setWorkflowView() {},
+    setWorkflowBlockedReason() {},
+    refresh() {},
+  });
+  assert.deepEqual(events, ["session_start", "session_before_fork", "session_tree", "session_shutdown"]);
+});
 
 test("session initialization enables Godmode by default after establishing the baseline", async () => {
   const events: string[] = [];

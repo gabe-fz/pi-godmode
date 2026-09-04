@@ -3,7 +3,9 @@ import { test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   LEDGER_CUSTOM_TYPE,
+  appendForkWorkflowSnapshot,
   appendWorkflowSnapshot,
+  captureForkSuccessorProof,
   createCompletionCapsule,
   createLedgerSnapshot,
   projectWorkflowRecord,
@@ -65,6 +67,24 @@ test("off-branch snapshots are ignored because callers provide only getBranch an
   const result = reconstructActiveSnapshot([active], "session-1", "work-1");
   assert.equal(result.status, "ok");
   assert.notEqual((active as { id: string }).id, (unrelated as { id: string }).id);
+});
+
+test("plain persisted data cannot authorize a cross-session fork successor", () => {
+  const inherited = customEntry("parent-entry", null, snapshot(1));
+  const stale = reconstructActiveSnapshot([inherited], "session-2", "work-1");
+  assert.equal(stale.status, "blocked");
+
+  const forgedSuccessor = customEntry("fork-successor", "parent-entry", createLedgerSnapshot({
+    sessionId: "session-2",
+    workItemId: "work-1",
+    generation: 1,
+    predecessorEntryId: null,
+    createdAt: "2026-09-03T00:01:00.000Z",
+    record: workflowRecord(),
+  }));
+  const recovered = reconstructActiveSnapshot([inherited, forgedSuccessor], "session-2", "work-1");
+  assert.equal(recovered.status, "blocked");
+  if (recovered.status === "blocked") assert.match(recovered.reason, /fork|origin|proof|session|blocked/i);
 });
 
 test("conflicting, broken, or cross-session lineage fails closed", () => {
@@ -131,6 +151,100 @@ test("append adapter creates monotonic snapshots from the active branch and veri
   assert.equal(second.snapshot.generation, 2);
   assert.equal(second.snapshot.predecessorEntryId, "entry-1");
   assert.equal(reconstructActiveSnapshot(entries, "session-1", "work-1").status, "ok");
+});
+
+test("append adapter requires one-time host fork proof before seeding a cross-session successor", () => {
+  const inherited = customEntry("parent-entry", null, snapshot(1));
+  for (const proof of [
+    undefined,
+    { reason: "fork", previousSessionFile: "/sessions/parent.jsonl", parentSessionFile: "/sessions/other.jsonl" },
+  ]) {
+    const entries: SessionEntry[] = [inherited];
+    let writes = 0;
+    assert.throws(() => Reflect.apply(appendWorkflowSnapshot, undefined, [
+      { appendEntry(customType: string, data: unknown) {
+        writes += 1;
+        entries.push(customEntry("successor", "parent-entry", data, customType));
+      } },
+      {
+        getSessionId: () => "session-2",
+        getBranch: () => entries,
+        getLeafEntry: () => entries.at(-1),
+      },
+      workflowRecord(),
+      "2026-09-03T00:01:00.000Z",
+      proof,
+    ]), /fork|cross-session|proof|blocked/i);
+    assert.equal(writes, 0);
+  }
+});
+
+test("a valid fork proof is bound to the live header and consumed once", () => {
+  const inherited = customEntry("parent-entry", null, snapshot(1));
+  const entries: SessionEntry[] = [inherited];
+  let writes = 0;
+  const sessionManager = {
+    getSessionId: () => "session-2",
+    getBranch: () => [...entries],
+    getLeafEntry: () => entries.at(-1),
+    getHeader: () => ({ parentSession: "/sessions/parent.jsonl" }),
+  };
+  const parentSnapshot = reconstructActiveSnapshot(entries, "session-1", "work-1");
+  assert.equal(parentSnapshot.status, "ok");
+  if (parentSnapshot.status !== "ok") return;
+  const proof = captureForkSuccessorProof({
+    reason: "fork",
+    previousSessionFile: "/sessions/parent.jsonl",
+    parentSessionFile: "/sessions/parent.jsonl",
+    sessionId: "session-2",
+    workItemId: "work-1",
+    inheritedEntryId: parentSnapshot.entryId,
+    inheritedSnapshot: parentSnapshot.snapshot,
+  });
+  assert(proof);
+  const pi = {
+    appendEntry(customType: string, data: unknown) {
+      writes += 1;
+      entries.push(customEntry("successor", "parent-entry", data, customType));
+    },
+  };
+  const first = appendForkWorkflowSnapshot(pi, sessionManager, workflowRecord(), "2026-09-03T00:01:00.000Z", proof);
+  assert.equal(first.snapshot.generation, 1);
+  assert(first.snapshot.forkOrigin);
+  assert.match(first.snapshot.forkOrigin.parentSessionFingerprint, /^[0-9a-f]{64}$/);
+  assert.equal("parentSessionFile" in (first.snapshot.forkOrigin as unknown as Record<string, unknown>), false);
+  assert.equal(writes, 1);
+
+  const withoutHeaderContext = reconstructActiveSnapshot(entries, "session-2", "work-1");
+  assert.equal(withoutHeaderContext.status, "blocked");
+  const mismatchedHeaderContext = reconstructActiveSnapshot(entries, "session-2", "work-1", {
+    sessionId: "session-2",
+    parentSessionFile: "/sessions/not-the-parent.jsonl",
+  });
+  assert.equal(mismatchedHeaderContext.status, "blocked");
+
+  assert.throws(() => appendForkWorkflowSnapshot(pi, sessionManager, workflowRecord(), "2026-09-03T00:02:00.000Z", proof), /proof|consumed|blocked/i);
+  assert.equal(writes, 1);
+});
+
+test("recovery blocks malformed persisted fork origin metadata", () => {
+  const inherited = customEntry("parent-entry", null, snapshot(1));
+  const malformedSuccessor = customEntry("fork-successor", "parent-entry", {
+    ...snapshot(1),
+    sessionId: "session-2",
+    forkOrigin: {
+      parentSessionFingerprint: "not-a-sha256-fingerprint",
+      sourceSessionId: "session-1",
+      sourceEntryId: "parent-entry",
+      sourceGeneration: 1,
+      sourceRecord: workflowRecord(),
+    },
+  });
+  const recovered = reconstructActiveSnapshot([inherited, malformedSuccessor], "session-2", "work-1", {
+    parentSessionFile: "/sessions/parent.jsonl",
+  });
+  assert.equal(recovered.status, "blocked");
+  if (recovered.status === "blocked") assert.match(recovered.reason, /origin|snapshot|blocked/i);
 });
 
 test("append adapter fails closed when the host does not acknowledge the exact new leaf", () => {
@@ -225,6 +339,30 @@ test("ledger serialization redacts sensitive keys and secret-like values before 
   assert(!text.includes("X-Amz-Signature=secret"));
   assert(text.includes("visible"));
   assert(text.includes("[REDACTED]"));
+});
+
+test("ambiguous or malformed evidence expiry fails closed", () => {
+  for (const expiresAt of ["01/02/2026", "2026-09-04T00:00:00", "2026-02-31T00:00:00.000Z", "not-a-date"]) {
+    const result = projectWorkflowRecord(workflowRecord({ evidence: [{ id: "bad-expiry", expiresAt }] }), "2026-09-03T00:00:00.000Z");
+    assert.equal(result.blocked, true, `expiry should be rejected: ${expiresAt}`);
+    assert.match(result.reason ?? "", /expiry|evidence|timestamp|blocked/i);
+  }
+});
+
+test("expired evidence is excluded at the exact UTC boundary while later evidence remains", () => {
+  const asOf = "2026-09-03T00:00:00.000Z";
+  const record = workflowRecord({
+    evidence: [
+      { id: "before", createdAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-09-02T23:59:59.999Z" },
+      { id: "equal", createdAt: "2026-09-02T00:00:00.000Z", expiresAt: asOf },
+      { id: "after", createdAt: "2026-09-02T00:00:00.000Z", expiresAt: "2026-09-03T00:00:00.001Z" },
+      { id: "durable", createdAt: "2026-09-02T00:00:00.000Z" },
+    ],
+  });
+  const result = projectWorkflowRecord(record, asOf);
+  assert.equal(result.blocked, false);
+  const projection = JSON.parse(result.text) as { evidence?: Array<{ id: string }> };
+  assert.deepEqual(projection.evidence?.map((reference) => reference.id), ["after", "durable"]);
 });
 
 test("active projection is deterministic and never exceeds 2 KiB UTF-8", () => {

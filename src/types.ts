@@ -218,7 +218,22 @@ export interface WorkflowRecord {
   latestCapsuleReference?: string;
 }
 
+/**
+ * Persisted authority binding for a generation-one snapshot created while
+ * entering a forked session. The parent session path is deliberately not
+ * retained; its bounded SHA-256 fingerprint is enough for recovery to bind
+ * the successor to the trusted SessionManager header.
+ */
+export interface LedgerForkOrigin {
+  parentSessionFingerprint: string;
+  sourceSessionId: string;
+  sourceEntryId: string;
+  sourceGeneration: number;
+  sourceRecord: WorkflowRecord;
+}
+
 export interface LedgerSnapshot {
+  /** Schema v1 remains compatible with ordinary (non-fork) snapshots. */
   schemaVersion: 1;
   sessionId: string;
   workItemId: string;
@@ -226,6 +241,7 @@ export interface LedgerSnapshot {
   predecessorEntryId: string | null;
   createdAt: string;
   record: WorkflowRecord;
+  forkOrigin?: LedgerForkOrigin;
 }
 export type WorkflowLedgerSnapshot = LedgerSnapshot;
 
@@ -236,7 +252,16 @@ export interface LedgerSnapshotInput {
   predecessorEntryId?: string | null;
   createdAt: string;
   record: WorkflowRecord;
+  /** Set only by the proof-authorized fork append path. */
+  forkOrigin?: LedgerForkOrigin;
 }
+
+/** Header-derived context required to recover a persisted fork successor. */
+export interface LedgerRecoveryContext {
+  readonly sessionId?: string;
+  readonly parentSessionFile?: string;
+}
+export type TrustedRecoveryContext = LedgerRecoveryContext;
 
 export interface WorkflowProjection {
   text: string;

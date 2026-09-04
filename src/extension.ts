@@ -9,10 +9,12 @@ import { GodmodeMode } from "./mode.ts";
 import { ModelLease, type PiModel } from "./model-lease.ts";
 import { mutationGuard } from "./mutation-guard.ts";
 import { preflightFaculties } from "./preflight.ts";
+import { registerWorkflowLifecycle } from "./workflow-lifecycle.ts";
 import { statusLine, boundedStatus } from "./status.ts";
 import { SubagentsClient } from "./subagents-client.ts";
 import { registerGodmodeTools } from "./tools.ts";
 import type { GodmodeConfig, ThinkingLevel } from "./types.ts";
+import type { ChecklistView } from "./workflow-state.ts";
 
 export const PRIMARY_GUIDANCE_VERSION = 5;
 export const PRIMARY_GUIDANCE = `Godmode is active. You are the high-tier Primary and the sole planning, decision, orchestration, review, acceptance, and user-facing authority. Do not delegate authority or seek an oracle. Delegate bounded reconnaissance to Eye, implementation to Hand, and independent review to Scale. Only one Divine Faculty may be active.
@@ -40,6 +42,8 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   const modelLease = new ModelLease();
   const toolLease = new ActiveToolLease(pi);
   let verifiedGodmodeModels = new Set<string>();
+  let workflowView: Readonly<ChecklistView> | undefined;
+  let workflowBlockedReason: string | undefined;
 
   const requireContext = (): ExtensionContext => {
     if (!currentCtx) throw new Error("Godmode has no active Pi session context.");
@@ -113,15 +117,53 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     releaseTools: () => toolLease.release(),
     onSnapshot: (snapshot) => {
       if (!currentCtx?.hasUI) return;
-      currentCtx.ui.setStatus("godmode", statusLine(snapshot));
+      const base = statusLine(snapshot, workflowView);
+      // A malformed ledger must remain visible as blocked without exposing
+      // payload details in the footer. Keep the same hard UTF-8 bound as the
+      // normal status renderer.
+      const blocked = workflowBlockedReason && base !== undefined
+        ? `${base} · FLOW blocked`
+        : base;
+      let bounded = blocked;
+      while (bounded !== undefined && Buffer.byteLength(bounded, "utf8") > 256) {
+        bounded = [...bounded].slice(0, -1).join("");
+      }
+      currentCtx.ui.setStatus("godmode", bounded);
     },
   });
 
+  const refreshWorkflowStatus = (ctx: ExtensionContext): void => {
+    if (!ctx.hasUI) return;
+    const base = statusLine(mode.snapshot, workflowView);
+    const blocked = workflowBlockedReason && base !== undefined
+      ? `${base} · FLOW blocked`
+      : base;
+    let bounded = blocked;
+    while (bounded !== undefined && Buffer.byteLength(bounded, "utf8") > 256) {
+      bounded = [...bounded].slice(0, -1).join("");
+    }
+    ctx.ui.setStatus("godmode", bounded);
+  };
+
   registerGodmodeTools(pi, mode);
+
+  registerWorkflowLifecycle(pi, {
+    setWorkflowView(view) {
+      workflowView = view;
+    },
+    setWorkflowBlockedReason(reason) {
+      workflowBlockedReason = reason;
+    },
+    refresh: refreshWorkflowStatus,
+    onContext(ctx) {
+      currentCtx = ctx;
+    },
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
     await initializeGodmodeSession(mode, pi, ctx);
+    refreshWorkflowStatus(ctx);
   });
 
   pi.registerCommand("godmode", {
@@ -173,6 +215,8 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
+    workflowView = undefined;
+    workflowBlockedReason = undefined;
     await mode.shutdown();
     currentCtx = undefined;
   });

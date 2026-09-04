@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { mutationGuard } from "../../src/mutation-guard.ts";
 import { boundedStatus, statusLine } from "../../src/status.ts";
 import type { GodmodeSnapshot } from "../../src/types.ts";
+import { applyRoadmapTransition, deriveChecklistView } from "../../src/workflow-state.ts";
+import { workflowRecord } from "../fixtures/workflow.ts";
 
 function snapshot(faculty: "eye" | "hand" | "scale", phase: "launching" | "running" | "attention" | "stopping" = "running"): GodmodeSnapshot {
   return { phase: "active", delegation: phase, activeRun: { runId: "r", faculty, agent: `godmode-${faculty}`, title: "t", assignment: "a", phase, startedAt: 1 } };
@@ -25,6 +27,17 @@ test("status rendering is bounded and covers stable footer states", () => {
   assert.equal(statusLine({ phase: "degraded", delegation: "idle", degradedReason: "x" }), "GODMODE ● degraded");
   const result = boundedStatus({ phase: "active", delegation: "idle", degradedReason: "x".repeat(5000) });
   assert.equal((result.degradedReason as string).length, 1024);
+});
+
+test("workflow footer is derived from canonical checklist state without hiding operational status", () => {
+  const audit = { actor: "Primary" as const, timestamp: "2026-09-03T00:00:00.000Z", reason: "Controlled verification.", reference: "evidence:test" };
+  const implemented = applyRoadmapTransition(workflowRecord(), "item-1", { ...audit, actor: "Hand", to: "implemented-unverified" });
+  const verified = applyRoadmapTransition(implemented, "item-1", { ...audit, to: "verified" });
+  const record = applyRoadmapTransition(verified, "item-2", { ...audit, to: "blocked" });
+  const workflow = deriveChecklistView(record);
+  const rendered = statusLine({ phase: "active", delegation: "idle" }, workflow);
+  assert.equal(rendered, "GODMODE ● idle · FLOW draft 1/2 · blocked 1 · next classification");
+  assert(Buffer.byteLength(rendered ?? "", "utf8") <= 256);
 });
 
 test("bounded status exposes deadline phase and timing without assignment details", () => {

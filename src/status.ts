@@ -1,19 +1,52 @@
 import type { GodmodeSnapshot } from "./types.ts";
+import type { ChecklistView } from "./workflow-state.ts";
+
+const STATUS_MAX_BYTES = 256;
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
+  let output = "";
+  for (const character of value) {
+    if (Buffer.byteLength(`${output}${character}`, "utf8") > maximumBytes) break;
+    output += character;
+  }
+  return output;
+}
+
+function workflowSummary(workflow: Readonly<ChecklistView>): string {
+  const items = workflow.items;
+  const settled = items.filter((item) => item.status === "verified" || item.status === "waived").length;
+  const blocked = items.filter((item) => item.status === "blocked").length;
+  return ` · FLOW ${workflow.phase} ${settled}/${items.length} · blocked ${blocked} · next ${workflow.nextGate}`;
+}
 
 function label(faculty: "eye" | "hand" | "scale"): string {
   return faculty[0]!.toUpperCase() + faculty.slice(1);
 }
 
-export function statusLine(snapshot: GodmodeSnapshot): string | undefined {
-  if (snapshot.phase === "off" || snapshot.phase === "enabling" || snapshot.phase === "stopping") return snapshot.phase === "off" ? undefined : `GODMODE ● ${snapshot.phase}`;
-  if (snapshot.phase === "degraded") return "GODMODE ● degraded";
-  if (snapshot.activeRun?.deadline?.phase === "hard") return `GODMODE ● ${label(snapshot.activeRun.faculty)} hard deadline`;
-  if (snapshot.activeRun?.deadline?.phase === "pending") return `GODMODE ● ${label(snapshot.activeRun.faculty)} deadline pending`;
-  if (snapshot.activeRun?.deadline?.phase === "extended") return `GODMODE ● ${label(snapshot.activeRun.faculty)} deadline extended`;
-  if (snapshot.activeRun?.phase === "attention") return "GODMODE ● decision requested";
-  if (snapshot.activeRun) return `GODMODE ● ${label(snapshot.activeRun.faculty)} running`;
-  if (snapshot.lastRun) return "GODMODE ● result ready";
-  return "GODMODE ● idle";
+export function statusLine(snapshot: GodmodeSnapshot, workflow?: Readonly<ChecklistView>): string | undefined {
+  let operational: string | undefined;
+  if (snapshot.phase === "off" || snapshot.phase === "enabling" || snapshot.phase === "stopping") {
+    operational = snapshot.phase === "off" ? undefined : `GODMODE ● ${snapshot.phase}`;
+  } else if (snapshot.phase === "degraded") {
+    operational = "GODMODE ● degraded";
+  } else if (snapshot.activeRun?.deadline?.phase === "hard") {
+    operational = `GODMODE ● ${label(snapshot.activeRun.faculty)} hard deadline`;
+  } else if (snapshot.activeRun?.deadline?.phase === "pending") {
+    operational = `GODMODE ● ${label(snapshot.activeRun.faculty)} deadline pending`;
+  } else if (snapshot.activeRun?.deadline?.phase === "extended") {
+    operational = `GODMODE ● ${label(snapshot.activeRun.faculty)} deadline extended`;
+  } else if (snapshot.activeRun?.phase === "attention") {
+    operational = "GODMODE ● decision requested";
+  } else if (snapshot.activeRun) {
+    operational = `GODMODE ● ${label(snapshot.activeRun.faculty)} running`;
+  } else if (snapshot.lastRun) {
+    operational = "GODMODE ● result ready";
+  } else {
+    operational = "GODMODE ● idle";
+  }
+  if (operational === undefined || workflow === undefined) return operational;
+  return truncateUtf8(`${operational}${workflowSummary(workflow)}`, STATUS_MAX_BYTES);
 }
 
 export function boundedStatus(snapshot: GodmodeSnapshot): Record<string, unknown> {

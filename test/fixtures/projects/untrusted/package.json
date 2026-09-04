@@ -1,0 +1,8 @@
+{
+  "name": "untrusted-do-not-run",
+  "private": true,
+  "scripts": {
+    "test": "echo harmless-command-name",
+    "postinstall": "echo must-not-execute"
+  }
+}
