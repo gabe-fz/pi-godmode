@@ -31,16 +31,17 @@ Completed and pushed to `main`:
 - `ac23655` — canonical workflow types, audited immutable phase/roadmap transitions, Primary-only authority validation, derived checklist views, active-branch snapshot reconstruction, bounded sanitization/projection, completion capsules, and focused tests.
 - `ddde101` — verified plain-custom-entry snapshot appends, monotonic predecessor lineage, complete bounded branch validation, hostile getter/cycle handling, and negative recovery/acknowledgement tests.
 - `c0eab03` — Pi session lifecycle restoration/tree refresh, proof-authorized and persisted fork successors, trusted restart recovery, derived workflow footer state, strict evidence expiry, context-omission coverage, and bounded hostile-project/library fixtures.
-- Independent validation at the checkpoint: `npm run typecheck`, `npm test` (76 passing), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
+- `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
+- Independent validation at the checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Next session should finish the remaining **Phase 0 baseline/fixture and red contract coverage** before beginning Phase 2 admission gates. Phase 1 exit criteria are met; preserve its fork-origin, context-omission, retention, and fail-closed recovery guarantees while adding later workflow gates.
+Next session should begin **Phase 2 specification-packet and TDD admission gates**, making the two FR-1 intended-red contracts green and adding the remaining Phase 2 red evidence before Hand implementation. Preserve the completed Phase 0/1 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. The FR-6 and FR-10/FR-11 intended-red contracts remain for Phases 3 and 5 respectively.
 
 ### Phase 0 — Baseline and contract fixtures
 
-- [ ] Record current runtime behavior and compatibility constraints from `SPEC.md`; do not alter `src/`, tests, package manifests, lockfiles, or git state until a later approved phase.
-- [ ] Add a fixture project for each relevant surface and an untrusted project containing misleading instructions, secret-like files, symlinks, and harmless command names.
-- [ ] Primary authors red contract tests for FR-1, FR-2, FR-6, FR-10, and FR-11. Before Hand, run them and record the intended failures (missing workflow gates/doctor/parser behavior, not setup failures).
-- [ ] Validation/evidence: existing `npm run typecheck` and `npm test`; manual full diff; docs link/terminology check. Preserve a baseline report.
+- [x] Record current runtime behavior and compatibility constraints from `SPEC.md`; do not alter `src/`, tests, package manifests, lockfiles, or git state until a later approved phase. *(The truthful baseline is post-Phase-1 because a pre-mutation baseline was not captured; `docs/BASELINE.md` records that historical limitation.)*
+- [x] Add a fixture project for each relevant surface and an untrusted project containing misleading instructions, secret-like files, temporary-test symlink hazards, and harmless command names.
+- [x] Primary authors red contract tests for FR-1, FR-2, FR-6, FR-10, and FR-11. Before Hand, run them and record the intended failures (missing workflow gates/doctor/parser behavior, not setup failures). *(FR-1, FR-6, FR-10, and FR-11 have five explicitly excluded intended-red contracts; FR-2 uses its historically observed Phase-1 red evidence and current green regressions rather than fabricating a new failure.)*
+- [x] Validation/evidence: existing `npm run typecheck` and `npm test`; manual full diff; docs link/terminology check. Preserve a baseline report.
 - **Exit:** baseline is independently captured, fixture safety is proven, and the current runtime contract has no unexplained change.
 
 ### Phase 1 — Canonical work-item state and ledgers
