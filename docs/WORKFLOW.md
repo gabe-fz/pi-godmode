@@ -1,6 +1,6 @@
 # Godmode target workflow
 
-> **Design status:** proposed target behavior. This document is normative for a future implementation, not a claim that the repository implements these gates today. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
+> **Implementation status:** Phase 2 (FR-1, FR-3, and FR-4) is implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records checkout-derived red evidence or a narrow waiver, persists trusted Hand lifecycle transitions, and enforces pre-Hand TDD, sticky red-test, and bounded assignment scope integrity. Primary inspection, mandatory Scale, and later gates remain target behavior. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
 
 ## 1. Authority and unit of work
 
@@ -20,10 +20,10 @@ Classification is recorded once in the session ledger. If work spans classificat
 
 ## 2. God-authored specification packet
 
-Before Hand receives a mutation assignment, the Primary writes a compact specification packet. It is intentionally minimal and must contain:
+**Phase 2 implemented.** Before Hand receives a mutation assignment, the Primary writes a compact specification packet through `godmode_workflow`. The controller accepts only one fresh work item, stamps the Primary author and audited gate transitions, and persists through the active SessionManager only after exact append acknowledgement. It is intentionally minimal and must contain:
 
 1. **Goal:** one sentence of the form: “An identified actor can achieve an observable outcome through an identified interface under stated constraints, evidenced by named checks.”
-2. **Numbered functional requirements:** `FR-1`, `FR-2`, …; each requirement describes observable behavior, inputs/outputs or state changes, and its applicable interface.
+2. **Numbered functional requirements:** `FR-1`, `FR-2`, …; each `functionalRequirements` entry contains the exact ID, an observable behavior description, and its applicable interface. IDs must exactly agree with `requirementIds`.
 3. **Non-goals:** explicit exclusions for this item. Non-goals are not hidden acceptance failures.
 4. **Roadmap:** a short sequence of implementation and verification increments. Each item maps to requirement IDs and has exactly one canonical status: `pending`, `implemented-unverified`, `verified`, `blocked`, or `waived` with a reason. Deferred ideas belong in non-goals or follow-up work, not in the acceptance roadmap.
 5. **Acceptance checks:** commands or interactions that can establish each applicable requirement.
@@ -71,16 +71,16 @@ Each phase or roadmap-status transition records the actor, timestamp, work-item 
 
 ## 4. Spec-driven TDD gate
 
-For every feature or bugfix, and for any other executable change where a test can express the contract, the Primary authors red tests **before Hand starts**. A red test is a focused executable assertion of the intended requirement, not a placeholder or a test of implementation details.
+**Phase 2 implemented.** For every feature or bugfix, and for any other executable change where a test can express the contract, the Primary authors red tests **before Hand starts**. A red test is a focused executable assertion of the intended requirement, not a placeholder or a test of implementation details.
 
-The Primary must observe and record the intended failure before delegation:
+The Primary must observe and record the intended failure before delegation. In normal runtime this is the `record-red` action of `godmode_workflow`; the controller derives the SHA-256 from the checkout and stamps the Primary actor, evidence ID, and timestamp:
 
 - exact test/verification command and controlled environment;
 - exit status and a bounded relevant output excerpt or artifact reference;
 - requirement ID(s) covered; and
 - confirmation that the failure is the missing behavior, not a broken fixture, dependency, setup, or unrelated pre-existing failure.
 
-The assignment to Hand includes the red-test references and failure evidence. Hand then makes the tests green by implementing the approved behavior. Hand must not weaken a red test by deleting assertions, broadening matchers, changing expected values to observed values, skipping it, marking it optional, or changing the test to follow the implementation. A test that appears incorrect or untestable is an escalation to the Primary; it is not permission to dilute the gate.
+The assignment to Hand includes the red-test references and failure evidence. Setup or unrelated failure kinds are rejected rather than recorded as intended red. Phase 2 admission also verifies the referenced test still exists inside the checkout, matches the recorded SHA-256 content identity, contains a meaningful assertion, and is not skipped, todo, only, or an obvious tautology. Hand then makes the tests green by implementing the approved behavior. Hand must not weaken a red test by deleting assertions, broadening matchers, changing expected values to observed values, skipping it, marking it optional, or changing the test to follow the implementation. A test that appears incorrect or untestable is an escalation to the Primary; it is not permission to dilute the gate.
 
 ### Explicit TDD waivers
 
@@ -90,19 +90,19 @@ A waiver is narrow and recorded in the ledger. It names the item, the inapplicab
 - the change is a mechanical refactor with a complete existing contract suite and no new observable behavior; or
 - a safe executable seam is genuinely unavailable, with the Primary documenting the limitation and an interface-matched manual/controlled check.
 
-A user may explicitly waive TDD for a stated item. “Time pressure,” a Hand report, or a permanently broad project setting is not an implicit waiver. A waiver never waives review, evidence, security checks, or Primary-only acceptance. For this documentation-only change, TDD is explicitly waived because no source or test behavior changes; documentation validation is still required.
+A user may explicitly waive TDD for a stated item. “Time pressure,” a Hand report, or a permanently broad project setting is not an implicit waiver. A waiver never waives review, evidence, security checks, or Primary-only acceptance. The implementation accepts a structured narrow waiver only with requirement coverage, named item/seam, Primary approver/actor, date, bounded scope, and compensating check/evidence; feature/bugfix waivers additionally require a genuinely unavailable safe executable seam. Documentation-only work can use the documented narrow waiver; documentation validation is still required.
 
 ## 5. Hand gate and handoff
 
-Hand receives only an approved packet, expected mutation paths, red-test evidence (or the named waiver), and applicable evidence expectations. Hand:
+**Phase 2 implemented.** After an admitted red result or waiver, Godmode persists `hand-running` before spawning Hand. It watches an admitted red-test file and its parent synchronously; any targeted write, rename, or removal is a sticky integrity compromise even when the original bytes are restored. Hand receives only an approved packet, expected mutation paths, red-test evidence (or the named waiver), and applicable evidence expectations. Hand:
 
-- changes only the approved scope and preserves unrelated work;
-- keeps red tests intact and makes them green;
+- changes only the approved (possibly deliberately narrowed) mutation scope and preserves unrelated work;
+- keeps red tests intact and makes them green; the packet may identify the immutable test without granting Hand permission to mutate it;
 - runs focused meaningful verification;
 - does not mutate git history, index, branches, worktrees, remotes, releases, or deployments; and
 - escalates before expanding product, architecture, security, data, dependency, migration, or public-interface scope.
 
-Hand's completion is a **handoff**, not a completion decision. The handoff capsule names changed files, implementation summary, commands and outcomes, incomplete work, surprises, residual risks, and decisions still needed. The Primary records it as evidence and does not promote its checklist to accepted status.
+An intact successful Hand completion is persisted as `hand-handoff`; a failed, stopped, rejected, timed-out, or compromised run is persisted as `blocked`. Watchers are disposed on every terminal, rollback, disable, and shutdown path. Hand's completion is a **handoff**, not a completion decision. The handoff capsule names changed files, implementation summary, commands and outcomes, incomplete work, surprises, residual risks, and decisions still needed. The Primary records it as evidence and does not promote its checklist to accepted status.
 
 ## 6. Primary inspection gate
 
@@ -158,6 +158,6 @@ Only the Primary can set `accepted` or communicate completion to the user. Accep
 
 Neither Hand, Scale, a passing command, a derived checklist, nor a ledger transition performed by another actor can accept the item.
 
-## 10. Current-task application
+## 10. Current implementation checkpoint
 
-This documentation-only task is classified as **documentation**. It intentionally does not modify `src/`, tests, package manifests, lockfiles, or git state. TDD is explicitly waived under the documentation-only reason above. The Primary still validates links, terminology, normative target-status wording, evidence coverage, doctor safety/migration guidance, and absence of source/test changes. Feature and bugfix work performed in a later implementation session must follow the full red-test and mandatory-Scale gates in this document.
+The current implementation is the Phase 2 workflow authoring, packet, TDD admission, and Hand integrity gate. It intentionally preserves the existing runtime/security contract and does not claim Primary inspection, mandatory Scale acceptance, interface-evidence automation, or doctor behavior. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.

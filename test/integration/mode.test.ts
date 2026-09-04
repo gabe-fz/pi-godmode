@@ -7,6 +7,8 @@ import { GodmodeMode, type ModeDependencies } from "../../src/mode.ts";
 import { ModelLease, type PiModel } from "../../src/model-lease.ts";
 import { ASYNC_COMPLETE_EVENT, CONTROL_EVENT, RPC_REQUEST_EVENT, SubagentsClient, type EventBus } from "../../src/subagents-client.ts";
 import { validConfig } from "../fixtures/config.ts";
+import { workflowRecord } from "../fixtures/workflow.ts";
+import { applyPhaseTransition } from "../../src/workflow-state.ts";
 
 const PING = {
   version: 1,
@@ -54,6 +56,7 @@ function fixture(options: {
   now?: () => number;
   setTimer?: (callback: () => void, ms: number) => unknown;
   clearTimer?: (timer: unknown) => void;
+  omitWorkflowPersistence?: boolean;
 } = {}) {
   const bus = new OwnerBus();
   bus.holdSpawn = options.holdSpawn ?? false;
@@ -73,6 +76,36 @@ function fixture(options: {
   };
   const cwd = mkdtempSync(join(tmpdir(), "godmode-mode-"));
   const client = new SubagentsClient(bus, { timeoutMs: options.clientTimeoutMs ?? 1000 });
+  let handWorkflow = workflowRecord({
+    classification: "documentation/configuration",
+    requirementIds: ["FR-1"],
+    expectedPaths: ["src.ts"],
+    roadmap: [{ id: "item-1", requirementIds: ["FR-1"], title: "Document bounded behavior", status: "pending" }],
+    acceptanceChecks: ["npm test"],
+    authorityConstraints: ["Hand may change only expected paths."],
+    phase: "tdd-waived",
+    history: [{
+      kind: "phase",
+      workItemId: "work-1",
+      from: "red-test-ready",
+      to: "tdd-waived",
+      actor: "Primary",
+      timestamp: "2026-09-04T00:00:00.000Z",
+      reason: "Documentation-only work has no executable seam.",
+      reference: "decision:waiver-1",
+    }],
+    tddWaiver: {
+      id: "waiver-1",
+      item: "work-1",
+      requirementIds: ["FR-1"],
+      inapplicableSeam: "No executable seam applies to documentation.",
+      reason: "Documentation only.",
+      approver: "Primary",
+      date: "2026-09-04",
+      scope: ["src.ts"],
+      compensatingCheck: "npm test",
+    },
+  });
   const dependencies: ModeDependencies = {
     client,
     modelLease: new ModelLease(),
@@ -85,6 +118,19 @@ function fixture(options: {
     isTrusted: () => true,
     cwd: () => cwd,
     sessionId: () => "session-1",
+    getWorkflowRecord: () => handWorkflow,
+    ...(!options.omitWorkflowPersistence ? {
+      persistWorkflowTransition: (to: Parameters<typeof applyPhaseTransition>[1]["to"], reason: string, reference: string) => {
+        handWorkflow = applyPhaseTransition(handWorkflow, {
+          to,
+          actor: "Primary",
+          timestamp: "2026-09-04T00:00:01.000Z",
+          reason,
+          reference,
+        });
+        return handWorkflow;
+      },
+    } : {}),
     validateFacultyModels: () => { log.push("models:validated"); },
     registerFaculties: () => {
       log.push("faculties:register");
@@ -106,6 +152,14 @@ function fixture(options: {
 
 const eye = { faculty: "eye" as const, title: "Inspect", task: "Inspect source evidence" };
 const hand = { faculty: "hand" as const, title: "Implement", task: "Implement bounded change", expectedPaths: ["src.ts"], acceptanceChecks: ["npm test"] };
+
+test("Hand admission fails closed without trusted workflow lifecycle persistence", async () => {
+  const f = fixture({ omitWorkflowPersistence: true });
+  await f.mode.enable();
+  await assert.rejects(f.mode.delegate(hand), /trusted workflow lifecycle persistence/i);
+  assert.equal(f.mode.snapshot.delegation, "idle");
+  assert.equal(f.bus.requests.some((request) => request.method === "spawn"), false);
+});
 
 test("transactional enable, single-slot launch, attention, steer, and exact completion", async () => {
   const f = fixture({ holdSpawn: true });

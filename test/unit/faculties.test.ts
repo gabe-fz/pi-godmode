@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import { test } from "node:test";
 import { FACULTY_PROMPTS, facultyDefinition, renderAssignment, validateDelegation } from "../../src/faculties.ts";
 import { validConfig } from "../fixtures/config.ts";
+import { workflowRecord } from "../fixtures/workflow.ts";
 
 function checkout(): string {
   const root = mkdtempSync(join(tmpdir(), "godmode-faculties-"));
@@ -14,6 +15,36 @@ function checkout(): string {
 
 test("delegation normalizes arrays, requires Hand scope/checks, and renders standalone contract", () => {
   const cwd = checkout();
+  const packet = workflowRecord({
+    classification: "documentation/configuration",
+    requirementIds: ["FR-1"],
+    expectedPaths: ["src"],
+    roadmap: [{ id: "item-1", requirementIds: ["FR-1"], title: "Document behavior", status: "pending" }],
+    acceptanceChecks: ["npm test"],
+    authorityConstraints: ["Hand may change only expected paths."],
+    phase: "tdd-waived",
+    history: [{
+      kind: "phase",
+      workItemId: "work-1",
+      from: "red-test-ready",
+      to: "tdd-waived",
+      actor: "Primary",
+      timestamp: "2026-09-04T00:00:00.000Z",
+      reason: "Documentation-only work has no executable seam.",
+      reference: "decision:waiver-1",
+    }],
+    tddWaiver: {
+      id: "waiver-1",
+      item: "work-1",
+      requirementIds: ["FR-1"],
+      inapplicableSeam: "No executable seam applies to documentation.",
+      reason: "Documentation only.",
+      approver: "Primary",
+      date: "2026-09-04",
+      scope: ["src"],
+      compensatingCheck: "npm test",
+    },
+  });
   const normalized = validateDelegation({
     faculty: "hand",
     title: " Implement feature ",
@@ -22,7 +53,7 @@ test("delegation normalizes arrays, requires Hand scope/checks, and renders stan
     expectedPaths: [join(cwd, "src")],
     acceptanceChecks: ["npm test", "npm test"],
     constraints: ["No dependencies"],
-  }, cwd);
+  }, cwd, packet);
   assert.deepEqual(normalized.contextFiles, ["src"]);
   assert.deepEqual(normalized.acceptanceChecks, ["npm test"]);
   const assignment = renderAssignment(normalized);

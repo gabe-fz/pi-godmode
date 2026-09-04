@@ -1,6 +1,6 @@
 # State, ledgers, and memory
 
-> **Design status:** proposed target workflow. This describes a future storage and context policy; it does not claim that the current runtime has implemented a project ledger or doctor migration.
+> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, and Phase 2 packet/TDD records are implemented. Durable project-knowledge curation, later acceptance/evidence fields, and doctor migration remain target behavior. This design does not introduce a separate project ledger.
 
 Godmode separates **active session execution state** from **durable project knowledge**. The distinction protects token budgets, prevents stale checklists from becoming authority, and limits sensitive evidence retention.
 
@@ -63,7 +63,7 @@ Do **not** create or auto-inject an ever-growing `PROJECT_MEMORY.md`. A large me
 
 ## Token-efficient context policy
 
-The future implementation should enforce a bounded context budget:
+The implemented ledger/projection boundary and later workflow additions follow this bounded context budget:
 
 1. Keep the full ledger and raw artifacts outside model context by default.
 2. Inject only a short active projection when needed: current phase, roadmap exceptions, one-sentence goal, next gate, unresolved decision, latest evidence result, and a few artifact IDs.

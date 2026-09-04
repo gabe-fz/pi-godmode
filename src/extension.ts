@@ -10,10 +10,12 @@ import { ModelLease, type PiModel } from "./model-lease.ts";
 import { mutationGuard } from "./mutation-guard.ts";
 import { preflightFaculties } from "./preflight.ts";
 import { registerWorkflowLifecycle } from "./workflow-lifecycle.ts";
+import { appendWorkflowSnapshot } from "./session-ledger.ts";
+import { applyPhaseTransition, deriveChecklistView } from "./workflow-state.ts";
 import { statusLine, boundedStatus } from "./status.ts";
 import { SubagentsClient } from "./subagents-client.ts";
-import { registerGodmodeTools } from "./tools.ts";
-import type { GodmodeConfig, ThinkingLevel } from "./types.ts";
+import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.ts";
+import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord } from "./types.ts";
 import type { ChecklistView } from "./workflow-state.ts";
 
 export const PRIMARY_GUIDANCE_VERSION = 5;
@@ -43,6 +45,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   const toolLease = new ActiveToolLease(pi);
   let verifiedGodmodeModels = new Set<string>();
   let workflowView: Readonly<ChecklistView> | undefined;
+  let workflowRecord: WorkflowRecord | undefined;
   let workflowBlockedReason: string | undefined;
 
   const requireContext = (): ExtensionContext => {
@@ -65,6 +68,20 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     setThinkingLevel(level: ThinkingLevel): void { pi.setThinkingLevel(level); },
   };
 
+  const persistWorkflowTransition = (to: WorkflowPhase, reason: string, reference: string): WorkflowRecord => {
+    const current = workflowRecord;
+    if (!current) throw new Error("Workflow transition requires an active canonical record.");
+    const timestamp = new Date().toISOString();
+    const next = applyPhaseTransition(current, { to, actor: "Primary", timestamp, reason, reference });
+    const ctx = requireContext();
+    // appendWorkflowSnapshot verifies the exact new active leaf before this
+    // closure changes either in-memory projection or record state.
+    const persisted = appendWorkflowSnapshot(pi, ctx.sessionManager, next, timestamp);
+    workflowRecord = persisted.snapshot.record;
+    workflowView = deriveChecklistView(persisted.snapshot.record);
+    return persisted.snapshot.record;
+  };
+
   const mode = new GodmodeMode({
     client,
     modelLease,
@@ -73,6 +90,8 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     isTrusted: () => requireContext().isProjectTrusted(),
     cwd: () => realpathSync(requireContext().cwd),
     sessionId: () => requireContext().sessionManager.getSessionFile() ?? requireContext().sessionManager.getSessionId(),
+    getWorkflowRecord: () => workflowRecord,
+    persistWorkflowTransition,
     async validateFacultyModels(config: GodmodeConfig) {
       const ctx = requireContext();
       const available = new Set(ctx.modelRegistry.getAvailable().map(modelKey));
@@ -145,11 +164,25 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus("godmode", bounded);
   };
 
-  registerGodmodeTools(pi, mode);
+  const workflowController = createPrimaryWorkflowController({
+    pi,
+    getSessionManager: () => currentCtx?.sessionManager,
+    getWorkflowRecord: () => workflowRecord,
+    setWorkflowRecord(record) {
+      workflowRecord = record;
+      workflowView = deriveChecklistView(record);
+      refreshWorkflowStatus(requireContext());
+    },
+    cwd: () => realpathSync(requireContext().cwd),
+  });
+  registerGodmodeTools(pi, mode, workflowController);
 
   registerWorkflowLifecycle(pi, {
     setWorkflowView(view) {
       workflowView = view;
+    },
+    setWorkflowRecord(record) {
+      workflowRecord = record;
     },
     setWorkflowBlockedReason(reason) {
       workflowBlockedReason = reason;
@@ -216,6 +249,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     workflowView = undefined;
+    workflowRecord = undefined;
     workflowBlockedReason = undefined;
     await mode.shutdown();
     currentCtx = undefined;

@@ -65,6 +65,7 @@ test("blocking and recovery are bounded by the normative phase graph", () => {
 
 test("only Primary can verify, waive, or accept and acceptance requires settled roadmap items", () => {
   const scoped = workflowRecord({
+    requirementIds: ["FR-2"],
     roadmap: [{ id: "item-1", requirementIds: ["FR-2"], title: "State", status: "pending" }],
   });
   const implemented = advanceToReview(applyRoadmapTransition(scoped, "item-1", {
@@ -80,6 +81,50 @@ test("only Primary can verify, waive, or accept and acceptance requires settled 
 
   const verified = applyRoadmapTransition(implemented, "item-1", { ...audit, to: "verified" });
   assert.equal(applyPhaseTransition(verified, { ...audit, to: "accepted" }).phase, "accepted");
+});
+
+test("every non-draft canonical phase transition and persisted audit is Primary-only", () => {
+  const pathTo = (phases: readonly Parameters<typeof applyPhaseTransition>[1]["to"][]) =>
+    phases.reduce((current, to) => applyPhaseTransition(current, { ...audit, to }), workflowRecord());
+  const predecessors = {
+    classified: [],
+    specified: ["classified"],
+    "red-test-ready": ["classified", "specified"],
+    "red-test-observed": ["classified", "specified", "red-test-ready"],
+    "tdd-waived": ["classified", "specified", "red-test-ready"],
+    "hand-running": ["classified", "specified", "red-test-ready", "red-test-observed"],
+    "hand-handoff": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running"],
+    "primary-verifying": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff"],
+    "evidence-ready": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying"],
+    "scale-running": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready"],
+    "review-passed": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running"],
+    "scale-waived": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready"],
+    accepted: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running", "review-passed"],
+    remediation: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying"],
+    blocked: [],
+    rejected: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running", "review-passed"],
+  } as const;
+  for (const [target, phases] of Object.entries(predecessors)) {
+    let predecessor = pathTo(phases);
+    if (target === "accepted") {
+      for (const item of predecessor.roadmap) {
+        predecessor = applyRoadmapTransition(predecessor, item.id, { ...audit, actor: "Hand", to: "implemented-unverified" });
+        predecessor = applyRoadmapTransition(predecessor, item.id, { ...audit, to: "verified" });
+      }
+    }
+    for (const actor of ["Eye", "Hand", "Scale"] as const) {
+      assert.throws(
+        () => applyPhaseTransition(predecessor, { ...audit, actor, to: target as Parameters<typeof applyPhaseTransition>[1]["to"] }),
+        /Primary|authority/i,
+        `${actor} unexpectedly authorized ${target}`,
+      );
+    }
+    const authorized = applyPhaseTransition(predecessor, { ...audit, to: target as Parameters<typeof applyPhaseTransition>[1]["to"] });
+    const forged = structuredClone(authorized);
+    const last = forged.history.at(-1);
+    if (last?.kind === "phase") last.actor = "Hand";
+    assert.equal(validateWorkflowRecord(forged).ok, false, `forged persisted ${target} audit was accepted`);
+  }
 });
 
 test("waivers require Primary authority, a reason, and a decision reference", () => {

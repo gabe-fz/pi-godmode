@@ -1,6 +1,6 @@
 # Pi Godmode Build Specification
 
-**Status:** Proposed target design (runtime contract documented below; target workflow and doctor are not yet implemented)
+**Status:** Phase 2 workflow gates are implemented (FR-1, FR-3, and FR-4); later workflow, Scale, evidence, and doctor behavior remains target design. The runtime contract documented below remains the compatibility baseline.
 **Product:** `pi-godmode`
 **Initial specification version:** 2
 
@@ -18,7 +18,7 @@ Godmode is a policy and user-experience layer, not a child-process manager. `pi-
 
 Godmode deliberately does not use an advisory-oracle escalation flow. The high-tier primary session is the planning and judgment authority. Faculties execute bounded assignments and escalate unresolved decisions upward through the native `pi-subagents` supervisor channel.
 
-This specification also defines the proposed spec-driven workflow, evidence gates, ledgers, and doctor target. Those target behaviors are explicitly future work; the existing runtime/security contract in sections 6–18 remains the compatibility baseline until a later implementation and review. Focused workflow details are in [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), evidence details in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), state/memory details in [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and doctor/migration details in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+This specification also defines the spec-driven workflow, evidence gates, ledgers, and doctor target. Phase 2 implements the normal-runtime Primary workflow authoring controller, structured Primary packet, red-test/TDD admission, append-acknowledged lifecycle transitions, sticky Hand red-test monitoring, and Hand integrity/scope gates; Primary inspection, mandatory Scale, interface evidence automation, and doctor remain future work. The existing runtime/security contract in sections 6–18 remains the compatibility baseline. Focused workflow details are in [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), evidence details in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), state/memory details in [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and doctor/migration details in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ## 2. Product principles
 
@@ -404,7 +404,7 @@ Enabling is transactional:
 9. Register a session-scoped capability ceiling allowing only the three canonical faculties, their bounded tool union, and no ambient child extensions.
 10. Preflight every faculty and verify the exact resolved agent, model candidate, thinking level, tools, cwd policy, extension restrictions, and fresh-context contract.
 11. Save the current active-tool membership that Godmode will change.
-12. Deactivate the ordinary model-facing `subagent` execution and `subagent_wait` surfaces and activate `godmode_delegate` and `godmode_control` while retaining supervisor response support.
+12. Deactivate the ordinary model-facing `subagent` execution and `subagent_wait` surfaces and activate `godmode_delegate`, `godmode_workflow`, and `godmode_control` while retaining supervisor response support.
 13. Mark the mode active, add Primary guidance, and update the footer.
 
 Any failure disposes partial registrations and ceilings, restores changed tools, restores the prior model/thinking state, clears the footer, and returns to off.
@@ -687,13 +687,13 @@ The enabled Primary system guidance should remain concise and versioned:
 
 ## 22. Proposed spec-driven workflow, evidence, state, and doctor target
 
-This section is normative for the future workflow and explicitly does not claim that the current package implements these gates. This documentation-only task does not modify source or tests. The focused contracts are split into [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+This section is normative for the workflow. The current package implements the Phase 2 subset (FR-1, FR-3, and FR-4) through the normal-runtime `godmode_workflow` controller, append-only session ledger, and constrained Hand admission; Primary inspection, mandatory Scale, evidence automation, and doctor remain target behavior. The focused contracts are split into [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ### 22.1 Target functional requirements
 
-The future implementation must satisfy these numbered requirements:
+The target workflow implementation must satisfy these numbered requirements; the current package ships the Phase 2 subset described below:
 
-- **FR-1 — Classification and packet:** classify each work item as feature, bugfix, refactor/maintenance, documentation/configuration, or test-only/tooling. Before Hand, the God-authored packet contains a minimal one-sentence goal, numbered functional requirements, non-goals, a short implementation-and-verification roadmap whose items map to requirements, acceptance checks, expected paths, and authority constraints. Feature adds a supported capability; bugfix corrects an incorrect or regressed behavior. Non-goals are not hidden acceptance failures; deferred ideas remain separate from the acceptance roadmap.
+- **FR-1 — Classification and packet:** classify each work item as feature, bugfix, refactor/maintenance, documentation/configuration, or test-only/tooling. Before Hand, the Primary-authored packet contains a minimal goal, numbered `functionalRequirements` entries with observable descriptions and applicable interfaces, non-goals, a short implementation-and-verification roadmap whose items map to requirements, acceptance checks, expected paths, and authority constraints. The normal-runtime `godmode_workflow` controller creates one fresh packet and stamps Primary-only audited transitions; replacement/reclassification is rejected. Feature adds a supported capability; bugfix corrects an incorrect or regressed behavior. Non-goals are not hidden acceptance failures; deferred ideas remain separate from the acceptance roadmap.
 - **FR-2 — Canonical workflow state:** store one canonical workflow record in the session ledger, containing the current phase and exactly one status (`pending`, `implemented-unverified`, `verified`, `blocked`, or reasoned `waived`) for each roadmap item. Checklists, footers, dashboards, and implementation-plan checkboxes are derived views only. They cannot be a second status store or advance work without a ledger transition.
 - **FR-3 — Red before Hand:** for executable feature/bugfix behavior, God authors focused red tests before Hand starts and observes the intended failure, with command, result, requirement IDs, and controlled-environment evidence. A setup failure is not an intended red result.
 - **FR-4 — Green without weakening:** Hand implements only the approved packet, keeps red tests meaningful and intact, makes them green, and escalates rather than broadening authority or weakening assertions.
@@ -730,9 +730,9 @@ A recorded gate waiver leads to the gate-specific `tdd-waived` or `scale-waived`
 
 ### 22.3 TDD and test integrity
 
-God must write the red test before delegating executable feature/bugfix work to Hand and must observe the intended failure. The assignment includes the immutable red-test reference and bounded failure evidence. Hand must not delete assertions, relax expected values, skip the test, make it tautological, or alter it solely to match the implementation. A flawed fixture or test is escalated to Primary.
+**Phase 2 implemented:** the Primary workflow controller records an observed intended red result without accepting caller-supplied actor, hash, phase, or history authority. It computes SHA-256 from the checkout, rejects setup/unrelated failures, and persists only after exact ledger acknowledgement. Before Hand spawn, Godmode records `hand-running`; an immutable red-test monitor watches the file and parent, and any targeted event is sticky even if bytes are restored. Hand admission verifies the canonical packet phase, requirement coverage, checkout-confined test path, SHA-256 content identity, meaningful assertion, and non-skipped/non-tautological test content. Assignment expected paths and acceptance checks may deliberately narrow, but may not expand, packet authority; the packet identifies the immutable test and the Hand assignment explicitly prohibits mutating it, whether or not that path is retained in the narrowed scope. Completion reconciliation records only an intact terminal Hand as `hand-handoff`; all failures or integrity compromise are `blocked`. A flawed fixture or test is escalated to Primary; it is not permission to dilute the gate.
 
-TDD is explicitly waived for this documentation-only task because no executable behavior changes and a source test would not exercise the requested contract. Future narrow waivers must state the inapplicable seam, reason, approving actor (or explicit user), date/scope, and compensating interface-matched evidence. No blanket “docs” or “time pressure” waiver can silently cover feature/bugfix behavior.
+A documentation-only work item may waive TDD when no executable behavior changes and a source test would not exercise the requested contract. Narrow waivers must state the inapplicable seam, reason, approving actor, date/scope, requirement IDs, and compensating interface-matched check/evidence. No blanket “docs” or “time pressure” waiver can silently cover feature/bugfix behavior. Primary inspection and mandatory Scale remain later gates.
 
 ### 22.4 Evidence, Scale, and acceptance
 
@@ -762,4 +762,4 @@ Apply is additive and opt-in: show the complete proposed diff and named paths, r
 
 ### 22.7 Target status disclaimer
 
-The current repository implements the runtime contract described in sections 6–18, including the bare `/godmode` command and constrained faculties, subject to the existing tests and documented limitations. The target workflow gates, ledger/memory policy, and `/godmode doctor` behavior in this section and the focused docs are design requirements for a later session. This task must not be read as claiming that doctor, ledger persistence, red-test enforcement, evidence automation, or mandatory Scale enforcement is already implemented.
+The current repository implements the runtime contract described in sections 6–18, including the bare `/godmode` command and constrained faculties, subject to the existing tests and documented limitations. Phase 2 additionally implements the normal-runtime `godmode_workflow` controller, structured packet requirements, append-acknowledged Primary lifecycle transitions, pre-Hand red-test/TDD admission, bounded assignment narrowing, sticky red-test monitoring, and Hand integrity checks. Primary inspection, mandatory Scale acceptance/review, interface evidence automation, and `/godmode doctor` remain design requirements for later implementation. This task must not be read as claiming those later gates are shipped.

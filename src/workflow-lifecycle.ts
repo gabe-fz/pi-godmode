@@ -15,7 +15,7 @@ import {
   type ActiveSnapshot,
   type ForkSuccessorProof,
 } from "./session-ledger.ts";
-import type { LedgerRecoveryContext } from "./types.ts";
+import type { LedgerRecoveryContext, WorkflowRecord } from "./types.ts";
 import { deriveChecklistView, type ChecklistView } from "./workflow-state.ts";
 
 const MAX_WORKFLOW_BRANCH_ENTRIES = 1_024;
@@ -87,6 +87,8 @@ export interface WorkflowLifecycleOptions {
   /** Plain custom-entry append implementation supplied by the extension host. */
   pi: Pick<ExtensionAPI, "appendEntry">;
   setWorkflowView(view: Readonly<ChecklistView> | undefined): void;
+  /** Internal authority handoff to GodmodeMode; never model-facing. */
+  setWorkflowRecord?(record: WorkflowRecord | undefined): void;
   setWorkflowBlockedReason(reason: string | undefined): void;
   refresh(ctx: ExtensionContext): void;
   onContext?(ctx: ExtensionContext): void;
@@ -130,6 +132,7 @@ export function createWorkflowLifecycle(options: WorkflowLifecycleOptions): Work
   const clearState = (): void => {
     pendingForkProof = undefined;
     options.setWorkflowView(undefined);
+    options.setWorkflowRecord?.(undefined);
     options.setWorkflowBlockedReason(undefined);
   };
 
@@ -205,6 +208,7 @@ export function createWorkflowLifecycle(options: WorkflowLifecycleOptions): Work
     }
 
     if (recovery.status === "ok") {
+      options.setWorkflowRecord?.(recovery.snapshot.record);
       options.setWorkflowView(deriveChecklistView(recovery.snapshot.record));
     } else if (recovery.status === "blocked") {
       options.setWorkflowBlockedReason(recovery.reason);
@@ -238,7 +242,10 @@ export function createWorkflowLifecycle(options: WorkflowLifecycleOptions): Work
         recoveryContextFor(ctx),
       );
       if (recovery.status === "blocked") return { cancel: true };
-      if (recovery.status === "ok") options.setWorkflowView(deriveChecklistView(recovery.snapshot.record));
+      if (recovery.status === "ok") {
+        options.setWorkflowRecord?.(recovery.snapshot.record);
+        options.setWorkflowView(deriveChecklistView(recovery.snapshot.record));
+      }
       options.refresh(ctx);
     } catch {
       return { cancel: true };

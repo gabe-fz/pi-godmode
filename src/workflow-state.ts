@@ -7,15 +7,21 @@ import {
   type WorkflowActor,
   type WorkflowClassification,
   type WorkflowPhase,
+  type RedTestEvidence,
+  type TddWaiver,
   type WorkflowRecord,
   type WorkflowRoadmapItem,
+  type FunctionalRequirement,
 } from "./types.ts";
 
 const CLASSIFICATIONS = new Set<string>(WORKFLOW_CLASSIFICATIONS);
 const PHASES = new Set<string>(WORKFLOW_PHASES);
 const STATUSES = new Set<string>(ROADMAP_STATUSES);
 const ACTORS = new Set<string>(WORKFLOW_ACTORS);
-const PRIMARY_ONLY_PHASES = new Set<WorkflowPhase>(["tdd-waived", "scale-waived", "accepted", "rejected"]);
+// Every gate that changes what Hand may be told is Primary-authored. Keep
+// this independent from operational mode phases: model-facing input never
+// supplies any of these audit fields.
+const PRIMARY_ONLY_PHASES = new Set<WorkflowPhase>(WORKFLOW_PHASES.filter((phase) => phase !== "draft"));
 const PRIMARY_ONLY_ROADMAP_STATUSES = new Set<RoadmapStatus>(["verified", "waived"]);
 
 const ROADMAP_TRANSITIONS: Readonly<Record<RoadmapStatus, readonly RoadmapStatus[]>> = {
@@ -101,6 +107,9 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
     classification: record.classification,
     goal: record.goal,
     requirementIds: [...record.requirementIds],
+    ...(record.functionalRequirements !== undefined
+      ? { functionalRequirements: record.functionalRequirements.map((requirement) => ({ ...requirement })) }
+      : {}),
     nonGoals: [...record.nonGoals],
     expectedPaths: [...record.expectedPaths],
     phase: record.phase,
@@ -125,11 +134,33 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
     "scaleWaiverReference",
     "changedScopeSummary",
     "latestCapsuleReference",
+    "packetAuthor",
+    "acceptanceChecks",
+    "authorityConstraints",
+    "redTestEvidence",
+    "tddWaiver",
   ] as const;
   for (const key of optionalKeys) {
     const value = record[key];
     if (value !== undefined) {
-      (cloned as unknown as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
+      let copied: unknown = Array.isArray(value) ? [...value] : value;
+      if (key === "redTestEvidence" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          requirementIds: Array.isArray(objectValue.requirementIds) ? [...objectValue.requirementIds] : objectValue.requirementIds,
+          ...(isObject(objectValue.artifactReference) ? { artifactReference: { ...objectValue.artifactReference } } : {}),
+        };
+      } else if (key === "tddWaiver" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          requirementIds: Array.isArray(objectValue.requirementIds) ? [...objectValue.requirementIds] : objectValue.requirementIds,
+          scope: Array.isArray(objectValue.scope) ? [...objectValue.scope] : objectValue.scope,
+          ...(isObject(objectValue.compensatingEvidence) ? { compensatingEvidence: { ...objectValue.compensatingEvidence } } : {}),
+        };
+      }
+      (cloned as unknown as Record<string, unknown>)[key] = copied;
     }
   }
   return cloned;
@@ -196,6 +227,239 @@ function isRoadmapItem(value: unknown): value is WorkflowRoadmapItem {
     && (value.reason === undefined || typeof value.reason === "string");
 }
 
+const REQUIREMENT_ID = /^FR-[1-9]\d*$/u;
+
+function isFunctionalRequirement(value: unknown): value is FunctionalRequirement {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 3
+    && keys.every((key) => key === "id" || key === "description" || key === "interface")
+    && REQUIREMENT_ID.test(typeof value.id === "string" ? value.id : "")
+    && boundedPacketString(value.description, 8 * 1024)
+    && boundedPacketString(value.interface, 4 * 1024);
+}
+
+function validFunctionalRequirements(value: unknown, requirementIds: readonly string[]): value is FunctionalRequirement[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64 || !value.every(isFunctionalRequirement)) return false;
+  if (value.some((requirement) => requirement.description.trim() === requirement.id || requirement.interface.trim() === requirement.id)) return false;
+  const ids = value.map((requirement) => requirement.id);
+  const declared = new Set(requirementIds);
+  return ids.length === new Set(ids).size
+    && ids.length === declared.size
+    && ids.every((id) => declared.has(id));
+}
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+
+const RED_EVIDENCE_KEYS = new Set([
+  "id", "command", "environment", "exitStatus", "requirementIds", "testPath", "testContentHash",
+  "observedBy", "observedAt", "failureKind", "outputExcerpt", "artifactReference",
+]);
+const TDD_WAIVER_KEYS = new Set([
+  "id", "item", "requirementIds", "inapplicableSeam", "reason", "actor", "approver",
+  "date", "scope", "compensatingCheck", "compensatingEvidence",
+]);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === new Set(keys).size && keys.every((key) => allowed.has(key));
+}
+
+/**
+ * Feature/bugfix TDD waivers are exceptional: the absence must describe a
+ * real safe executable seam, rather than merely asserting that a test is
+ * inconvenient. Accept common natural-language orderings while requiring
+ * both a seam and an explicit unavailable/no-seam signal.
+ */
+function hasUnavailableSafeExecutableSeam(value: string): boolean {
+  const text = value.toLowerCase();
+  const namesSeam = /\b(?:safe|executable|test)\b.{0,64}\bseam\b/iu.test(text)
+    || /\bseam\b.{0,64}\b(?:safe|executable|test)\b/iu.test(text);
+  if (!namesSeam) return false;
+  return /\b(?:unavailable|not\s+available|does\s+not\s+exist|cannot\s+be\s+(?:used|provided)|no\s+(?:safe|executable|test|such)\b)/iu.test(text)
+    || /\bno\b.{0,96}\b(?:safe|executable|test)\b.{0,64}\bseam\b/iu.test(text);
+}
+const PACKET_REQUIRED_PHASES = new Set<WorkflowPhase>([
+  "specified",
+  "red-test-ready",
+  "red-test-observed",
+  "tdd-waived",
+  "hand-running",
+  "hand-handoff",
+  "primary-verifying",
+  "evidence-ready",
+  "scale-running",
+  "review-passed",
+  "scale-waived",
+  "accepted",
+  "remediation",
+  "rejected",
+]);
+const PACKET_FIELDS = ["packetAuthor", "acceptanceChecks", "authorityConstraints"] as const;
+
+function boundedPacketString(value: unknown, maximum = 32 * 1024): value is string {
+  return nonEmptyString(value) && Buffer.byteLength(value, "utf8") <= maximum && !value.includes("\0");
+}
+
+function packetStringArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 64
+    && value.every((entry) => boundedPacketString(entry, 4 * 1024));
+}
+
+function validArtifactReference(value: unknown): boolean {
+  if (typeof value === "string") return boundedPacketString(value, 4 * 1024);
+  if (!isObject(value) || !hasOnlyKeys(value, new Set(["id", "kind", "label", "source", "createdAt", "expiresAt"])) || !boundedPacketString(value.id, 256)) return false;
+  return Object.entries(value).every(([key, entry]) =>
+    ["id", "kind", "label", "source", "createdAt", "expiresAt"].includes(key)
+      && (entry === undefined || boundedPacketString(entry, 1024)));
+}
+
+function validPacketMetadata(record: Record<string, unknown>): boolean {
+  return record.packetAuthor === "Primary"
+    && boundedPacketString(record.goal, 32 * 1024)
+    && Array.isArray(record.requirementIds)
+    && record.requirementIds.length > 0
+    && validFunctionalRequirements(record.functionalRequirements, record.requirementIds.filter((id): id is string => typeof id === "string"))
+    && Array.isArray(record.nonGoals)
+    && record.nonGoals.length > 0
+    && Array.isArray(record.roadmap)
+    && record.roadmap.length > 0
+    && Array.isArray(record.expectedPaths)
+    && record.expectedPaths.length > 0
+    && packetStringArray(record.acceptanceChecks)
+    && packetStringArray(record.authorityConstraints);
+}
+
+function canonicalDate(value: unknown): value is string {
+  if (typeof value !== "string" || !boundedPacketString(value, 128)) return false;
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().startsWith(value);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function validRedTestEvidence(value: unknown, declaredRequirements: Set<string>): value is RedTestEvidence {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, RED_EVIDENCE_KEYS)
+    || !boundedPacketString(value.id, 256)
+    || !boundedPacketString(value.command, 8 * 1024)
+    || !boundedPacketString(value.environment, 4 * 1024)
+    || typeof value.exitStatus !== "number"
+    || !Number.isSafeInteger(value.exitStatus)
+    || value.exitStatus === 0
+    || !packetStringArray(value.requirementIds)
+    || !value.requirementIds.every((id) => REQUIREMENT_ID.test(id) && declaredRequirements.has(id))
+    || !boundedPacketString(value.testPath, 4 * 1024)
+    || !SHA256_HEX.test(typeof value.testContentHash === "string" ? value.testContentHash : "")
+    || value.observedBy !== "Primary"
+    || !canonicalDate(value.observedAt)
+    || value.failureKind !== "missing-behavior") return false;
+  if (value.requirementIds.length !== new Set(value.requirementIds).size) return false;
+  const excerpt = value.outputExcerpt;
+  const artifact = value.artifactReference;
+  if (excerpt === undefined && artifact === undefined) return false;
+  if (excerpt !== undefined && !boundedPacketString(excerpt, 8 * 1024)) return false;
+  if (artifact !== undefined && !validArtifactReference(artifact)) return false;
+  return value.requirementIds.length === declaredRequirements.size
+    && value.requirementIds.every((id) => declaredRequirements.has(id));
+}
+
+function validTddWaiver(value: unknown, declaredRequirements: Set<string>, classification?: WorkflowClassification): value is TddWaiver {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, TDD_WAIVER_KEYS)
+    || !boundedPacketString(value.id, 256)
+    || !boundedPacketString(value.item, 256)
+    || !packetStringArray(value.requirementIds)
+    || !value.requirementIds.every((id) => REQUIREMENT_ID.test(id) && declaredRequirements.has(id))
+    || value.requirementIds.length !== new Set(value.requirementIds).size
+    || !boundedPacketString(value.inapplicableSeam, 4 * 1024)
+    || !boundedPacketString(value.reason, 8 * 1024)
+    || (value.actor !== undefined && value.actor !== "Primary")
+    || (value.approver !== undefined && value.approver !== "Primary")
+    || (value.actor === undefined && value.approver === undefined)
+    || !canonicalDate(value.date)) return false;
+  const scope = value.scope;
+  const scopeValid = typeof scope === "string"
+    ? boundedPacketString(scope, 4 * 1024)
+    : packetStringArray(scope);
+  if (!scopeValid) return false;
+  const reason = value.reason.toLowerCase();
+  if (/time\s*pressure|deadline|capacity|convenience|no\s*time|urgent/iu.test(reason)) return false;
+  const broad = typeof scope === "string" ? scope : (scope as string[]).join(" ");
+  if (/^\s*(all|any|everything|entire|whole)\b|\b(entire|whole)\s+(?:project|repository|codebase|checkout|work)|\b(all changes|all future work)\b/iu.test(broad)) return false;
+  if (value.compensatingCheck === undefined && value.compensatingEvidence === undefined) return false;
+  if (value.compensatingCheck !== undefined && !boundedPacketString(value.compensatingCheck, 8 * 1024)) return false;
+  if (value.compensatingEvidence !== undefined && !validArtifactReference(value.compensatingEvidence)) return false;
+  // A feature/bugfix waiver is allowed only for the explicitly documented
+  // genuinely unavailable safe seam; documentation-only and mechanical
+  // changes can use their named inapplicable seam.
+  const itemReason = `${value.item} ${value.inapplicableSeam} ${value.reason}`;
+  if ((classification === "feature" || classification === "bugfix")
+    && !hasUnavailableSafeExecutableSeam(itemReason)) return false;
+  return value.requirementIds.length === declaredRequirements.size
+    && value.requirementIds.every((id) => declaredRequirements.has(id));
+}
+
+export function validateTddWaiver(value: unknown, requirementIds: readonly string[], classification?: WorkflowClassification): boolean {
+  return validTddWaiver(value, new Set(requirementIds), classification);
+}
+
+/**
+ * Validate packet metadata at a persistence/admission boundary. Draft records
+ * may omit packet fields for schema-v1 recovery, but once packet metadata is
+ * present (or the record is beyond draft) all structured gate objects must be
+ * complete and internally attributable.
+ */
+export function validateWorkflowPacket(record: unknown): boolean {
+  if (!isObject(record) || !isPhase(record.phase)) return false;
+  const hasPacketField = PACKET_FIELDS.some((field) => record[field] !== undefined);
+  const hasGateMetadata = record.redTestEvidence !== undefined || record.tddWaiver !== undefined;
+  const phase = record.phase;
+  if (!hasPacketField && !hasGateMetadata && !PACKET_REQUIRED_PHASES.has(phase as WorkflowPhase)) return true;
+  // Schema-v1 drafts may carry the older packet fields without structured
+  // functional requirements. They remain drafts and cannot pass Hand gates;
+  // every specified/pre-Hand phase still requires the complete structure.
+  if (phase === "draft" && !hasGateMetadata && record.functionalRequirements === undefined) return true;
+  if (!validPacketMetadata(record)) return false;
+  if (!Array.isArray(record.requirementIds)) return false;
+  const requirements = new Set(record.requirementIds.filter((id): id is string => typeof id === "string"));
+  const redEvidence = record.redTestEvidence;
+  const tddWaiver = record.tddWaiver;
+  const hasRedEvidence = redEvidence !== undefined;
+  const hasTddWaiver = tddWaiver !== undefined;
+  if (hasRedEvidence && hasTddWaiver) return false;
+  if (redEvidence !== undefined && !validRedTestEvidence(redEvidence, requirements)) return false;
+  if (tddWaiver !== undefined && (!validTddWaiver(tddWaiver, requirements, record.classification as WorkflowClassification)
+    || tddWaiver.item !== record.workItemId)) return false;
+  if (redEvidence === undefined && record.redTestReference !== undefined) return false;
+  if (tddWaiver === undefined && record.tddWaiverReference !== undefined) return false;
+  if (redEvidence !== undefined && record.redTestReference !== undefined && record.redTestReference !== redEvidence.id) return false;
+  if (tddWaiver !== undefined && record.tddWaiverReference !== undefined && record.tddWaiverReference !== tddWaiver.id) return false;
+  const redEvidencePhases = new Set<WorkflowPhase>([
+    "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready",
+    "scale-running", "review-passed", "scale-waived", "accepted", "remediation", "blocked", "rejected",
+  ]);
+  const tddWaiverPhases = new Set<WorkflowPhase>([
+    "tdd-waived", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready",
+    "scale-running", "review-passed", "scale-waived", "accepted", "remediation", "blocked", "rejected",
+  ]);
+  if (hasRedEvidence && !redEvidencePhases.has(phase as WorkflowPhase)) return false;
+  if (hasTddWaiver && !tddWaiverPhases.has(phase as WorkflowPhase)) return false;
+  if (phase === "red-test-observed" && !hasRedEvidence) return false;
+  if (phase === "tdd-waived" && !hasTddWaiver) return false;
+  if ((hasRedEvidence && phase === "tdd-waived") || (hasTddWaiver && phase === "red-test-observed")) return false;
+  const handGatePhases = new Set<WorkflowPhase>([
+    "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready",
+    "scale-running", "review-passed", "scale-waived", "accepted", "remediation", "rejected",
+  ]);
+  if (handGatePhases.has(phase) && !hasRedEvidence && !hasTddWaiver) return false;
+  return true;
+}
+
 function validAudit(value: unknown, workItemId: string, roadmapIds: Set<string>): boolean {
   if (!isObject(value)
     || (value.kind !== "phase" && value.kind !== "roadmap")
@@ -255,28 +519,61 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     || !Array.isArray(record.evidence)) {
     return invalid("Workflow record has malformed required state; blocked.");
   }
+  // Schema-v1 drafts predate numbered functional requirements. Keep those
+  // records recoverable, while every newly authored packet and every
+  // post-draft phase remains strict about FR-N identities.
+  const requiresNumberedRequirements = record.functionalRequirements !== undefined
+    || PACKET_FIELDS.some((field) => record[field] !== undefined)
+    || PACKET_REQUIRED_PHASES.has(record.phase);
   if (!record.requirementIds.every(nonEmptyString)
-    || !record.nonGoals.every((entry) => typeof entry === "string")
-    || !record.expectedPaths.every((entry) => typeof entry === "string")
+    || (requiresNumberedRequirements && !record.requirementIds.every((id) => REQUIREMENT_ID.test(id)))
+    || record.requirementIds.length !== new Set(record.requirementIds).size
+    || !record.nonGoals.every((entry) => boundedPacketString(entry, 4 * 1024))
+    || !record.expectedPaths.every((entry) => boundedPacketString(entry, 4 * 1024))
     || !record.blockers.every((entry) => typeof entry === "string")
     || !record.residualRisks.every((entry) => typeof entry === "string")) {
-    return invalid("Workflow record contains malformed collection state; blocked.");
+    return invalid("Workflow record contains malformed or unnumbered requirement state; blocked.");
   }
-  if ((record.unresolvedDecisions !== undefined && !isStringArray(record.unresolvedDecisions))
+  const declaredRequirementIds = record.requirementIds as string[];
+  if ((record.functionalRequirements !== undefined && !validFunctionalRequirements(record.functionalRequirements, declaredRequirementIds))
+    || (record.unresolvedDecisions !== undefined && !isStringArray(record.unresolvedDecisions))
     || (record.redTestReference !== undefined && typeof record.redTestReference !== "string")
     || (record.tddWaiverReference !== undefined && typeof record.tddWaiverReference !== "string")
     || (record.scaleVerdict !== undefined && typeof record.scaleVerdict !== "string")
     || (record.scaleWaiverReference !== undefined && typeof record.scaleWaiverReference !== "string")
     || (record.changedScopeSummary !== undefined && typeof record.changedScopeSummary !== "string")
-    || (record.latestCapsuleReference !== undefined && typeof record.latestCapsuleReference !== "string")) {
-    return invalid("Workflow record contains malformed optional state; blocked.");
+    || (record.latestCapsuleReference !== undefined && typeof record.latestCapsuleReference !== "string")
+    || (record.packetAuthor !== undefined && record.packetAuthor !== "Primary")
+    || (record.acceptanceChecks !== undefined && !packetStringArray(record.acceptanceChecks))
+    || (record.authorityConstraints !== undefined && !packetStringArray(record.authorityConstraints))
+    || (record.redTestEvidence !== undefined && !isObject(record.redTestEvidence))
+    || (record.tddWaiver !== undefined && !isObject(record.tddWaiver))) {
+    return invalid("Workflow record contains malformed packet, functional requirements, red-test, or waiver metadata; blocked.");
   }
-  const items = record.roadmap;
+  const hasPacketField = PACKET_FIELDS.some((field) => record[field] !== undefined);
+  if (hasPacketField && !(record.phase === "draft" && record.functionalRequirements === undefined) && !validPacketMetadata(record)) {
+    return invalid("Workflow specification packet requires Primary author, complete functional requirements, acceptance checks, and authority constraints; blocked.");
+  }
+  if (PACKET_REQUIRED_PHASES.has(record.phase) && !validPacketMetadata(record)) {
+    return invalid("Workflow phase requires a complete Primary-authored specification packet; blocked.");
+  }
+  const items = record.roadmap as WorkflowRoadmapItem[];
   const roadmapIds = new Set<string>();
   for (const item of items) {
     if (!isRoadmapItem(item)) return invalid("Workflow record contains a malformed roadmap item; blocked.");
     if (roadmapIds.has(item.id)) return invalid("Workflow record contains duplicate roadmap state; blocked.");
     roadmapIds.add(item.id);
+    if (requiresNumberedRequirements
+      && (item.requirementIds.length === 0 || item.requirementIds.length !== new Set(item.requirementIds).size)) {
+      return invalid("Workflow roadmap contains empty or duplicate requirement links; blocked.");
+    }
+    if (!item.requirementIds.every((id) => (!requiresNumberedRequirements || REQUIREMENT_ID.test(id)) && declaredRequirementIds.includes(id))) {
+      return invalid("Workflow roadmap references an undeclared requirement; blocked.");
+    }
+  }
+  const coveredRequirements = new Set(items.flatMap((item) => item.requirementIds));
+  if (declaredRequirementIds.some((id) => !coveredRequirements.has(id))) {
+    return invalid("Workflow roadmap does not cover every declared requirement; blocked.");
   }
   for (const evidence of record.evidence) {
     if (!isObject(evidence) || !nonEmptyString(evidence.id)) return invalid("Workflow record contains malformed evidence state; blocked.");
@@ -362,8 +659,7 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
   if (!allowed.includes(transition.to)) {
     throw new Error(`Invalid workflow phase transition ${current.phase} -> ${transition.to}.`);
   }
-  if ((transition.to === "accepted" || transition.to === "rejected" || transition.to === "tdd-waived" || transition.to === "scale-waived")
-    && transition.actor !== "Primary") {
+  if (PRIMARY_ONLY_PHASES.has(transition.to) && transition.actor !== "Primary") {
     throw new Error("Only Primary has authority for this workflow transition.");
   }
   if (transition.to === "accepted" && current.roadmap.some((item) => item.status !== "verified" && item.status !== "waived")) {

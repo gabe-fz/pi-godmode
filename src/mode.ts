@@ -1,8 +1,70 @@
+import { statSync, watch } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import type { ModelLease, ModelLeaseHost } from "./model-lease.ts";
 import { AmbiguousRpcOutcomeError, completionState, SubagentsClient } from "./subagents-client.ts";
 import { extensionCapacityMs, hardDeadlineMs, launchBackstopMs, MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
-import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, TerminalRunState } from "./types.ts";
-import { AGENT_NAMES, renderAssignment, validateDelegation } from "./faculties.ts";
+import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, TerminalRunState, WorkflowPhase, WorkflowRecord } from "./types.ts";
+import { AGENT_NAMES, renderAssignment, validateDelegation, validateHandAdmission, verifyRedTestIdentity, type HandAdmissionBinding } from "./faculties.ts";
+
+export interface RedTestMonitor extends Disposable {
+  /** Optional externally observable sticky state for deterministic hosts. */
+  isCompromised?(): boolean;
+}
+
+export type RedTestMonitorFactory = (
+  identity: { path: string; hash: string },
+  onEvent: () => void,
+) => RedTestMonitor;
+
+function defaultRedTestMonitor(cwd: string, identity: { path: string; hash: string }, onEvent: () => void): RedTestMonitor {
+  const absolute = resolve(cwd, identity.path);
+  const target = basename(absolute);
+  const initial = statSync(absolute);
+  const watchers: Array<{ close(): void }> = [];
+  let disposed = false;
+  let sticky = false;
+  const mark = (): void => {
+    if (disposed) return;
+    sticky = true;
+    onEvent();
+  };
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    for (const watcher of watchers.splice(0)) {
+      try { watcher.close(); } catch { /* cleanup is best effort */ }
+    }
+  };
+  try {
+    // A file watcher catches writes and renames/removals of the admitted file.
+    // The parent watcher catches replacement via rename without treating
+    // unrelated sibling files as a compromise.
+    watchers.push(watch(absolute, { persistent: false }, () => mark()));
+    watchers.push(watch(dirname(absolute), { persistent: false }, (_event, filename) => {
+      const name = filename === undefined || filename === null ? undefined : filename.toString();
+      if (name === target) mark();
+    }));
+  } catch (error) {
+    dispose();
+    throw new Error(`Unable to monitor the immutable red test: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return {
+    dispose,
+    isCompromised(): boolean {
+      if (sticky) return true;
+      try {
+        const current = statSync(absolute);
+        // A synchronous metadata check closes the small ordering window where
+        // a write/restore event is queued by fs.watch just before completion.
+        if (current.dev !== initial.dev || current.ino !== initial.ino || current.size !== initial.size
+          || current.mtimeMs !== initial.mtimeMs || current.ctimeMs !== initial.ctimeMs) sticky = true;
+      } catch {
+        sticky = true;
+      }
+      return sticky;
+    },
+  };
+}
 
 export interface ModeDependencies {
   client: SubagentsClient;
@@ -26,6 +88,15 @@ export interface ModeDependencies {
   clearTimer?: (timer: unknown) => void;
   stopWaitMs?: number;
   pollMs?: number;
+  /** Internal canonical ledger access; absent or malformed state blocks Hand. */
+  getWorkflowRecord?: () => WorkflowRecord | undefined;
+  /** Compatibility spelling for internal lifecycle wiring and focused hosts. */
+  workflowRecord?: () => WorkflowRecord | undefined;
+  /** Trusted Primary-owned append/transition callback. It must update the
+   * canonical in-memory record only after appendWorkflowSnapshot acknowledges. */
+  persistWorkflowTransition?(to: WorkflowPhase, reason: string, reference: string): WorkflowRecord;
+  /** Synchronous seam for the immutable red-test monitor. */
+  monitorRedTest?: RedTestMonitorFactory;
 }
 
 export class GodmodeMode {
@@ -44,6 +115,9 @@ export class GodmodeMode {
   #hardDeadlineTimer?: unknown;
   /** Completion may beat the spawn RPC reply that supplies its correlation id. */
   #launchCompletions = new Map<string, unknown>();
+  #activeHandRedIdentity?: NonNullable<HandAdmissionBinding["redTest"]>;
+  #activeHandRedMonitor?: RedTestMonitor;
+  #activeHandRedCompromised = false;
 
   constructor(deps: ModeDependencies) {
     this.#deps = deps;
@@ -113,8 +187,15 @@ export class GodmodeMode {
     if (this.#active) throw new Error(`Only one Divine Faculty may be active; ${this.#active.faculty} is ${this.#active.phase}.`);
     const config = this.#config;
     if (!config) throw new Error("Godmode configuration is unavailable.");
-    const normalized = validateDelegation(input, this.#deps.cwd());
-    const assignment = renderAssignment(normalized);
+    if (input.faculty === "hand" && !this.#deps.persistWorkflowTransition) {
+      throw new Error("Hand admission requires trusted workflow lifecycle persistence.");
+    }
+    const canonicalRecord = input.faculty === "hand" ? this.#readWorkflowRecord() : undefined;
+    const normalized = validateDelegation(input, this.#deps.cwd(), canonicalRecord);
+    const handBinding = input.faculty === "hand"
+      ? validateHandAdmission(normalized, this.#deps.cwd(), canonicalRecord)
+      : undefined;
+    const assignment = renderAssignment(normalized, input.faculty === "hand" ? canonicalRecord : undefined);
     const startedAt = (this.#deps.now ?? Date.now)();
     const softTimeoutMs = config.faculties[normalized.faculty].timeoutMs;
     const active: ActiveRun = {
@@ -134,9 +215,25 @@ export class GodmodeMode {
       },
     };
     this.#active = active;
+    this.#activeHandRedIdentity = handBinding?.redTest;
+    this.#activeHandRedCompromised = false;
     this.#lastRun = undefined;
     this.#emit();
     try {
+      if (normalized.faculty === "hand") {
+        // Reserve the workflow slot in the ledger before any child can mutate
+        // the shared checkout. This callback is trusted extension plumbing;
+        // no model-facing input can select its actor or target phase.
+        this.#persistWorkflowPhase(active, "hand-running", "Primary admitted Hand after the immutable red-test/TDD gate.", "workflow:hand-running");
+        if (this.#activeHandRedIdentity) {
+          const identity = this.#activeHandRedIdentity;
+          const markCompromised = (): void => {
+            if (this.#active === active) this.#activeHandRedCompromised = true;
+          };
+          this.#activeHandRedMonitor = (this.#deps.monitorRedTest
+            ?? ((redIdentity, onEvent) => defaultRedTestMonitor(this.#deps.cwd(), redIdentity, onEvent)))(identity, markCompromised);
+        }
+      }
       const receipt = await this.#deps.client.spawn({
         agent: active.agent,
         task: assignment,
@@ -159,9 +256,18 @@ export class GodmodeMode {
     } catch (error) {
       if (this.#active === active) {
         if (error instanceof AmbiguousRpcOutcomeError) {
+          // The child may own the slot even though correlation was lost. Keep
+          // hand-running and its monitor so a late terminal event cannot be
+          // mistaken for an unguarded completion.
           this.#degrade(`Faculty launch outcome is uncertain; the active slot remains reserved: ${error.message}`);
         } else {
+          if (active.faculty === "hand") {
+            this.#persistWorkflowPhaseBestEffort(active, "blocked", "Hand launch failed before child ownership was established.", "workflow:blocked:hand-launch");
+          }
+          this.#disposeHandMonitor();
           this.#active = undefined;
+          this.#activeHandRedIdentity = undefined;
+          this.#activeHandRedCompromised = false;
           this.#emit();
         }
       }
@@ -282,6 +388,7 @@ export class GodmodeMode {
     try { await this.#deps.modelLease.restore(this.#deps.modelHost); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error(String(error))); }
     this.#config = undefined;
     this.#clearDeadlineTimers();
+    this.#disposeHandMonitor();
     this.#launchCompletions.clear();
     this.#active = undefined;
     this.#lastRun = undefined;
@@ -302,6 +409,7 @@ export class GodmodeMode {
       try { await this.#deps.modelLease.restore(this.#deps.modelHost); } catch { /* host may no longer permit model mutation */ }
       this.#phase = "off";
       this.#clearDeadlineTimers();
+      this.#disposeHandMonitor();
       this.#launchCompletions.clear();
       this.#active = undefined;
       this.#config = undefined;
@@ -415,14 +523,87 @@ export class GodmodeMode {
     if (this.#active !== active || !active.runId) return;
     this.#clearDeadlineTimers();
     if (state === "timed_out" && active.deadline) active.deadline.phase = "hard";
+    let finalState = state;
+    let finalResult = result;
+    let redTestIntact = true;
+    if (active.faculty === "hand" && this.#activeHandRedIdentity) {
+      let monitorCompromised = false;
+      try { monitorCompromised = this.#activeHandRedMonitor?.isCompromised?.() ?? false; } catch { monitorCompromised = true; }
+      const stickyCompromise = this.#activeHandRedCompromised || monitorCompromised;
+      try {
+        redTestIntact = !stickyCompromise && verifyRedTestIdentity(this.#deps.cwd(), this.#activeHandRedIdentity);
+      } catch {
+        redTestIntact = false;
+      }
+    }
+    if (!redTestIntact) {
+      // The red test is an immutable admission identity. A changed, renamed,
+      // removed, weakened, or restored test cannot turn a terminal child
+      // result into a successful handoff.
+      finalState = "failed";
+      finalResult = {
+        kind: "red-test-integrity-failure",
+        reason: "The admitted red-test content was changed during Hand or no longer matches its SHA-256 identity/meaningful-assertion policy.",
+        childResult: result,
+      };
+    }
+    if (active.faculty === "hand") {
+      const target: WorkflowPhase = finalState === "complete" && redTestIntact ? "hand-handoff" : "blocked";
+      try {
+        this.#persistWorkflowPhase(active, target,
+          target === "hand-handoff" ? "Hand completed with the immutable red test intact; handoff awaits Primary verification." : "Hand terminal result or immutable red-test integrity was not acceptable.",
+          target === "hand-handoff" ? "workflow:hand-handoff" : "workflow:blocked:hand-terminal");
+      } catch (error) {
+        // A child result never constitutes acceptance. If the canonical
+        // transition cannot be acknowledged, report failure and degrade while
+        // releasing the terminal child slot.
+        finalState = "failed";
+        finalResult = {
+          kind: "workflow-transition-persistence-failure",
+          reason: error instanceof Error ? error.message : String(error),
+          childResult: finalResult,
+        };
+        this.#degrade(`Hand terminal workflow transition could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
+        this.#persistWorkflowPhaseBestEffort(active, "blocked", "Hand terminal workflow transition failed closed.", "workflow:blocked:persistence-failure");
+      }
+    }
     this.#lastRun = {
       runId: active.runId,
       faculty: active.faculty,
-      state,
+      state: finalState,
       ...(active.deadline ? { deadline: this.#snapshotDeadline(active.deadline) } : {}),
-      result,
+      result: finalResult,
     };
+    this.#disposeHandMonitor();
     this.#active = undefined;
+    this.#activeHandRedIdentity = undefined;
+    this.#activeHandRedCompromised = false;
+  }
+
+  #readWorkflowRecord(): WorkflowRecord | undefined {
+    try {
+      return (this.#deps.getWorkflowRecord ?? this.#deps.workflowRecord)?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  #persistWorkflowPhase(active: ActiveRun, to: WorkflowPhase, reason: string, reference: string): void {
+    if (active.faculty !== "hand") return;
+    if (!this.#deps.persistWorkflowTransition) throw new Error("Trusted workflow lifecycle persistence is unavailable.");
+    this.#deps.persistWorkflowTransition(to, reason, reference);
+  }
+
+  #persistWorkflowPhaseBestEffort(active: ActiveRun, to: WorkflowPhase, reason: string, reference: string): void {
+    if (active.faculty !== "hand" || !this.#deps.persistWorkflowTransition) return;
+    try { this.#deps.persistWorkflowTransition(to, reason, reference); } catch (error) {
+      this.#degrade(`Workflow failure transition could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  #disposeHandMonitor(): void {
+    try { this.#activeHandRedMonitor?.dispose(); } catch { /* terminal cleanup is best effort */ }
+    this.#activeHandRedMonitor = undefined;
   }
 
   #handleCompletion(payload: unknown): void {

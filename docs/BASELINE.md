@@ -6,7 +6,7 @@
 
 This report records the current runtime boundary after the Phase 1 work. The Phase 1 implementation checkpoint is recorded as `c0eab03`; `fcb329ed1a075ea26f542704664b9aad0d0b8028` is the subsequent implementation-plan checkpoint used for this baseline. A pre-Phase-1 baseline was **not captured before mutation**. The statements below therefore describe the observed post-Phase-1 state, not a before/after measurement.
 
-The normative source for the compatibility boundary is [`SPEC.md`](../SPEC.md), especially sections 6–18. The workflow and doctor material in [`docs/WORKFLOW.md`](./WORKFLOW.md), [`docs/EVIDENCE.md`](./EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./DOCTOR.md) remains target design unless explicitly identified below as current runtime behavior.
+The normative source for the compatibility boundary is [`SPEC.md`](../SPEC.md), especially sections 6–18. The report remains a historical post-Phase-1 baseline. Since it was recorded, Phase 2 implemented the packet/TDD/Hand-integrity subset described in [`docs/WORKFLOW.md`](./WORKFLOW.md); Primary inspection, mandatory Scale, interface-evidence automation, and doctor remain target design.
 
 ## Observed compatibility invariants
 
@@ -54,16 +54,16 @@ The fixture matrix establishes inspection inputs only. It does not substitute PT
 
 ## Intentionally red future contracts
 
-`test/contracts/phase0-red.test.ts` contains five Primary-authored expected-failure contracts for FR-1 (two contracts), FR-6, FR-10, and FR-11. An explicit run observed all five fail for missing target behavior. They are intentionally excluded from the normal package test glob until their implementation phases. FR-2 is historical green Phase-1 evidence, not fabricated red evidence.
+`test/contracts/phase0-red.test.ts` originally captured five Primary-authored expected failures for FR-1 (two contracts), FR-6, FR-10, and FR-11. The two FR-1 contracts became green in Phase 2. FR-6, FR-10, and FR-11 remain intentionally red and excluded from the normal package test glob until their implementation phases. FR-2 is historical green Phase-1 evidence, not fabricated red evidence.
 
-## Target behavior, not current behavior
+## Post-baseline implementation status
 
-The following are explicitly future target workflow behavior and must not be reported as implemented by this baseline:
+This table distinguishes the historical baseline from subsequently implemented behavior:
 
-| Capability | Status |
+| Capability | Current status |
 | --- | --- |
 | `/godmode doctor` read-only discovery and its apply/preview grammar | **Target / not current** |
-| Primary-authored packet admission before Hand (classification, specification, and red-test admission) | **Target / not current** |
+| Primary-authored packet admission before Hand (classification, specification, red-test/TDD admission, and Hand test-integrity/scope gates) | **Implemented in Phase 2 after this baseline** |
 | Mandatory Scale acceptance gates for feature/bugfix work, including waiver/remediation enforcement | **Target / not current** |
 
-The current runtime has constrained faculties and Primary guidance for review, but target packet admission and mandatory Scale acceptance are not current acceptance gates. See [`docs/DOCTOR.md`](./DOCTOR.md) for the explicitly proposed doctor behavior and [`docs/WORKFLOW.md`](./WORKFLOW.md) for the proposed gate sequence.
+The current runtime now includes the Phase 2 packet and Hand-admission gates while retaining the compatibility invariants recorded above. Primary inspection and mandatory Scale acceptance remain later gates. See [`docs/DOCTOR.md`](./DOCTOR.md) for proposed doctor behavior and [`docs/WORKFLOW.md`](./WORKFLOW.md) for the implemented/target gate boundary.

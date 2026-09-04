@@ -184,6 +184,13 @@ export interface RoadmapTransitionAudit {
 export type WorkflowTransitionAudit = PhaseTransitionAudit | RoadmapTransitionAudit;
 export type TransitionAuditRecord = WorkflowTransitionAudit;
 
+/** A numbered, observable requirement in a Primary-authored packet. */
+export interface FunctionalRequirement {
+  id: string;
+  description: string;
+  interface: string;
+}
+
 export interface WorkflowRoadmapItem {
   id: string;
   requirementIds: string[];
@@ -194,11 +201,56 @@ export interface WorkflowRoadmapItem {
 }
 export type RoadmapItem = WorkflowRoadmapItem;
 
+/**
+ * Primary-authored packet metadata is kept on the canonical ledger record.
+ * These fields deliberately do not appear on DelegationInput: a model-facing
+ * caller cannot manufacture workflow authority or red-test provenance.
+ */
+export interface RedTestEvidence {
+  id: string;
+  command: string;
+  /** Bounded description of the controlled environment used for the observation. */
+  environment: string;
+  exitStatus: number;
+  requirementIds: string[];
+  /** Checkout-relative path to the immutable red test. */
+  testPath: string;
+  /** SHA-256 of the complete test content observed by Primary. */
+  testContentHash: string;
+  observedBy: "Primary";
+  observedAt: string;
+  failureKind: "missing-behavior";
+  outputExcerpt?: string;
+  artifactReference?: string | BoundedEvidenceReference;
+}
+
+export interface TddWaiver {
+  id: string;
+  /** The named work item or gate covered by this waiver. */
+  item: string;
+  requirementIds: string[];
+  inapplicableSeam: string;
+  reason: string;
+  /** `actor` is the canonical spelling; approver is retained for packet compatibility. */
+  actor?: "Primary";
+  approver?: "Primary";
+  /** ISO date or canonical UTC timestamp supplied by the Primary. */
+  date: string;
+  /** A bounded description or list of the exact waived scope. */
+  scope: string | string[];
+  compensatingCheck?: string;
+  compensatingEvidence?: string | BoundedEvidenceReference;
+}
+export type TDDWaiver = TddWaiver;
+export type RedEvidence = RedTestEvidence;
+
 export interface WorkflowRecord {
   workItemId: string;
   classification: WorkflowClassification;
   goal: string;
   requirementIds: string[];
+  /** Required for specified and later packets; optional for legacy drafts. */
+  functionalRequirements?: FunctionalRequirement[];
   nonGoals: string[];
   expectedPaths: string[];
   phase: WorkflowPhase;
@@ -208,6 +260,12 @@ export interface WorkflowRecord {
   blockers: string[];
   residualRisks: string[];
   evidence: BoundedEvidenceReference[];
+  /** Optional while a legacy draft is being assembled; required by specified. */
+  packetAuthor?: "Primary";
+  acceptanceChecks?: string[];
+  authorityConstraints?: string[];
+  redTestEvidence?: RedTestEvidence;
+  tddWaiver?: TddWaiver;
   /** Bounded current-state details used by recovery/projection when present. */
   unresolvedDecisions?: string[];
   redTestReference?: string;

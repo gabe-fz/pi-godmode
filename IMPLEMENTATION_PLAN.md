@@ -1,6 +1,6 @@
 # Temporary implementation plan: spec-driven Godmode workflow
 
-> **Temporary implementation tracker.** Implementation is in progress. Delete this file when the deletion criterion at the end is satisfied. Checked items denote reviewed, tested behavior already merged to `main`; unchecked compound items may contain partial groundwork but are not complete.
+> **Temporary implementation tracker.** Implementation is in progress. Delete this file when the deletion criterion at the end is satisfied. Checked items denote reviewed, tested behavior implemented in the current worktree or merged to `main`; unchecked compound items may contain partial groundwork but are not complete.
 
 ## Target requirements and acceptance traceability
 
@@ -34,7 +34,9 @@ Completed and pushed to `main`:
 - `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
 - Independent validation at the checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Next session should begin **Phase 2 specification-packet and TDD admission gates**, making the two FR-1 intended-red contracts green and adding the remaining Phase 2 red evidence before Hand implementation. Preserve the completed Phase 0/1 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. The FR-6 and FR-10/FR-11 intended-red contracts remain for Phases 3 and 5 respectively.
+Phase 2 specification-packet and TDD admission gates are implemented in the current working tree. The normal-runtime Primary workflow controller now persists fresh packets, checkout-derived intended-red evidence, and narrow waivers through exact ledger acknowledgements; Godmode persists trusted Hand lifecycle transitions and uses sticky immutable-red-test monitoring. The structured packet, deliberate Hand scope narrowing, and controller-to-admission path are covered by normal npm-test regressions. Preserve the completed Phase 0/1 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-6 and FR-10/FR-11 remain explicitly intended-red for their later phases.
+
+Next session should begin **Phase 3 Primary inspection and mandatory Scale gates**; this checkpoint does not claim FR-5, FR-6, or later doctor/evidence/migration behavior is shipped.
 
 ### Phase 0 — Baseline and contract fixtures
 
@@ -56,12 +58,12 @@ Next session should begin **Phase 2 specification-packet and TDD admission gates
 
 ### Phase 2 — Specification packet and TDD gates
 
-- [ ] Add feature/bugfix/other classification and validation of the minimal Primary-authored packet: goal, numbered FRs, non-goals, roadmap, checks, paths, and authority constraints.
-- [ ] Require observed red evidence before Hand for executable feature/bugfix behavior; implement narrow TDD waiver records with reason, actor, scope, date, and compensating check.
-- [ ] Reject weakened/removed/tautological red tests and unauthorized assignment expansion; preserve existing faculty authority and shared-checkout guard.
-- [ ] Primary authors red tests for packet validation, pre-Hand admission, intended failure provenance, waiver boundaries, and test-integrity checks. Run and capture the expected failures before Hand.
-- [ ] Validation/evidence: feature and bugfix fixtures through their supported interface, docs-only waiver fixture, malformed/irrelevant-failure fixtures, and existing runtime tests.
-- **Exit:** FR-1, FR-3, and FR-4 pass with evidence and a Hand handoff remains non-accepting.
+- [x] Add the normal-runtime Primary workflow controller and validation of the minimal Primary-authored packet: goal, numbered FR descriptions/interfaces, non-goals, roadmap, checks, paths, and authority constraints; persist only after exact ledger acknowledgement and reject replacement/reclassification.
+- [x] Require observed red evidence before Hand for executable feature/bugfix behavior; compute the test hash from the checkout; implement narrow Primary-only TDD waiver records with reason, actor, scope, date, and compensating check.
+- [x] Reject weakened/removed/tautological red tests and unauthorized assignment expansion; allow deliberate assignment narrowing; monitor the immutable test file and parent with sticky event state; persist Hand-running/handoff/blocked transitions while preserving existing faculty authority and shared-checkout guard.
+- [x] Primary authors red tests for packet validation, pre-Hand admission, intended failure provenance, waiver boundaries, and test-integrity checks. Run and capture the expected failures before Hand.
+- [x] Validation/evidence: feature and bugfix fixtures through their supported interface, docs-only waiver fixture, malformed/irrelevant-failure fixtures, and existing runtime tests.
+- **Exit:** FR-1, FR-3, and FR-4 pass with normal-runtime controller, persistence, admission, scope, and sticky-integrity evidence; a Hand handoff remains non-accepting. *(Phase 2 complete; FR-5/FR-6 and later gates remain for subsequent phases.)*
 
 ### Phase 3 — Primary inspection and mandatory Scale
 

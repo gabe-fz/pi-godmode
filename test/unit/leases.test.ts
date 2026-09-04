@@ -49,11 +49,11 @@ test("active-tool lease removes generic subagent execution and waiting, then con
   lease.acquire();
   assert(!active.includes("subagent"));
   assert(!active.includes("subagent_wait"));
-  assert(active.includes("godmode_delegate") && active.includes("godmode_control"));
+  assert(active.includes("godmode_delegate") && active.includes("godmode_workflow") && active.includes("godmode_control"));
   active.push("new_other_extension_tool");
   lease.release();
   assert(active.includes("subagent"));
   assert(active.includes("subagent_wait"));
   assert(active.includes("new_other_extension_tool"));
-  assert(!active.includes("godmode_delegate") && !active.includes("godmode_control"));
+  assert(!active.includes("godmode_delegate") && !active.includes("godmode_workflow") && !active.includes("godmode_control"));
 });

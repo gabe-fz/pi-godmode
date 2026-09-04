@@ -10,7 +10,7 @@ import {
   type WorkflowRecord,
   type WorkflowProjection,
 } from "./types.ts";
-import { validateWorkflowRecord } from "./workflow-state.ts";
+import { validateWorkflowPacket, validateWorkflowRecord } from "./workflow-state.ts";
 
 export const LEDGER_SCHEMA_VERSION = 1 as const;
 export const LEDGER_CUSTOM_TYPE = "godmode-workflow-ledger";
@@ -214,6 +214,7 @@ function validForkOrigin(
       || value.sourceGeneration < 1) return false;
     const validation = validateWorkflowRecord(value.sourceRecord);
     return validation.ok
+      && validateWorkflowPacket(value.sourceRecord)
       && validation.record.workItemId === workItemId
       && validEvidenceExpiry(validation.record)
       // Fork origin records are canonical persisted records, not a second
@@ -283,6 +284,9 @@ export function createLedgerSnapshot(input: LedgerSnapshotInput): LedgerSnapshot
   if (!validEvidenceExpiry(recordValidation.record)) {
     throw new Error("Workflow evidence expiresAt must be a canonical UTC ISO-8601 timestamp; blocked.");
   }
+  if (!validateWorkflowPacket(recordValidation.record)) {
+    throw new Error("Workflow packet metadata is incomplete or malformed; blocked.");
+  }
   const persistedRecord = sanitizedRecord(recordValidation.record);
   if (persistedRecord.workItemId !== input.workItemId) {
     throw new Error("Ledger snapshot record identity resembles sensitive data and cannot be persisted.");
@@ -329,6 +333,7 @@ function isSnapshot(value: unknown): value is LedgerSnapshot {
     || !validTimestamp(value.createdAt)) return false;
   const validation = validateWorkflowRecord(value.record);
   return validation.ok
+    && validateWorkflowPacket(value.record)
     && validation.record.workItemId === value.workItemId
     && validEvidenceExpiry(validation.record)
     // Schema v1 ordinary snapshots omit forkOrigin. When present it must be
@@ -653,12 +658,12 @@ function reconstructActiveSnapshotBounded(
 }
 
 /** The subset of ExtensionAPI needed to append a plain custom entry. */
-interface LedgerAppender {
+export interface LedgerAppender {
   appendEntry(customType: string, data?: unknown): void;
 }
 
 /** The public session getters needed to verify the active append lineage. */
-interface LedgerSessionManager {
+export interface LedgerSessionManager {
   getSessionId(): string;
   getBranch(): readonly SessionEntry[];
   getLeafEntry(): SessionEntry | undefined;
