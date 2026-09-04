@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 0,
+  "workflowId": "fixture-workflow-v0",
+  "phase": "draft",
+  "items": [
+    {
+      "id": "item-1",
+      "status": "pending",
+      "title": "Inspect the bounded fixture"
+    }
+  ],
+  "metadata": {
+    "fixture": true,
+    "bounded": true
+  }
+}

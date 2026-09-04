@@ -1,0 +1,7 @@
+{
+  "name": "build-config-docs-fixture",
+  "version": "0.0.0-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Passive build, configuration, and documentation fixture."
+}
