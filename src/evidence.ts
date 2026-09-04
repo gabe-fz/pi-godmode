@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep, join } from "nod
 import { tmpdir } from "node:os";
 import { TextDecoder } from "node:util";
 import type { BoundedEvidenceReference } from "./types.ts";
+import { containsSecretLikeContent, isSecretLikeFilename, scavengeGodmodeTempDirectories, type TempScavengeOptions } from "./security-text.ts";
 
 /** Bounded artifact importer limits. Raw evidence never enters the ledger. */
 export const EVIDENCE_MAX_FILES = 64;
@@ -31,6 +32,7 @@ export interface EvidenceArtifactDescriptor extends BoundedEvidenceReference {
   bytes: number;
   createdAt: string;
   expiresAt: string;
+  retentionClass: "session" | "review" | "durable";
 }
 
 export interface EvidenceArtifactInput {
@@ -80,10 +82,6 @@ function boundedInteger(value: number | undefined, fallback: number, maximum: nu
   return value === undefined ? fallback : Number.isSafeInteger(value) && value > 0 && value <= maximum ? value : (() => { throw new Error("Evidence import limits are invalid."); })();
 }
 
-function secretLike(value: string): boolean {
-  return /(?:authorization\s*[:=]|cookie\s*[:=]|set-cookie\s*[:=]|bearer\s+[a-z0-9._~+/=-]{8,}|basic\s+[a-z0-9._~+/=-]{8,}|(?:api[_ -]?key|access[_ -]?key|access[_ -]?token|id[_ -]?token|refresh[_ -]?token|token|secret|password|passwd|passphrase|credential)\s*[:=]\s*[^\s,;&]+|(?:x-amz-(?:signature|security-token)|sig|access[_-]?token|api[_-]?key|token|secret|password|credential)=[^&#\s]+|-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----|(?:^|[\s._-])(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][a-z0-9._-]{8,}|eyj[a-z0-9_-]{10,}\.[a-z0-9_-]{4,}\.[a-z0-9_-]{4,})/iu.test(value);
-}
-
 function activeContentLike(value: string): boolean {
   return /(?:<script(?:\s|>)|<iframe(?:\s|>)|<object(?:\s|>)|<embed(?:\s|>)|javascript\s*:|data\s*:\s*text\/(?:html|javascript)|\bon[a-z][a-z0-9_-]*\s*=)/iu.test(value);
 }
@@ -104,7 +102,7 @@ function safeText(content: Buffer, source: string): string {
   }).length;
   if (text.length > 0 && controls / text.length > 0.01) throw new Error(`Evidence artifact contains unsafe binary control data: ${source}`);
   if (activeContentLike(text)) throw new Error(`Evidence artifact contains embedded active content: ${source}`);
-  if (secretLike(text)) throw new Error(`Evidence artifact contains secret-like credentials or signed URL data: ${source}`);
+  if (containsSecretLikeContent(text)) throw new Error(`Evidence artifact contains secret-like credentials or signed URL data: ${source}`);
   return text;
 }
 
@@ -149,7 +147,7 @@ function sourcePath(path: string, cwd: string | undefined, roots: readonly strin
     throw new Error(`Evidence artifact is missing, inaccessible, or not a regular non-symlink file: ${path}`);
   }
   if (!roots.some((root) => isInside(root, canonical))) throw new Error(`Evidence artifact path is outside the checkout and approved OS-temp roots: ${path}`);
-  if (/^\.env(?:\.|$)/iu.test(basename(absolute))) throw new Error("Evidence refuses .env credential payloads.");
+  if (isSecretLikeFilename(absolute)) throw new Error("Evidence refuses secret-like credential filenames.");
   return { absolute, canonical };
 }
 
@@ -164,6 +162,9 @@ export function importEvidenceArtifacts(
   inputs: readonly (string | EvidenceArtifactInput)[],
   options: EvidenceImportOptions = {},
 ): EvidenceImportResult {
+  // This bounded detector is read-only; explicit lifecycle cleanup below is
+  // the only cleanup path for artifacts held by the current session.
+  scavengeGodmodeTempDirectories();
   if (!Array.isArray(inputs)) throw new Error("Evidence artifact inputs must be an array.");
   const maxFiles = boundedInteger(options.maxFiles, EVIDENCE_MAX_FILES, EVIDENCE_MAX_FILES);
   const maxFileBytes = boundedInteger(options.maxFileBytes, EVIDENCE_MAX_FILE_BYTES, EVIDENCE_MAX_FILE_BYTES);
@@ -205,6 +206,7 @@ export function importEvidenceArtifacts(
         bytes: content.byteLength,
         createdAt,
         expiresAt,
+        retentionClass,
       });
     }
     return { artifacts: descriptors, directory, totalBytes };
@@ -228,7 +230,8 @@ function descriptor(value: unknown): EvidenceArtifactDescriptor | undefined {
     || typeof candidate.source !== "string" || !isAbsolute(candidate.source) || Buffer.byteLength(candidate.source, "utf8") > 4096
     || typeof candidate.sha256 !== "string" || !SHA256.test(candidate.sha256)
     || typeof candidate.bytes !== "number" || !Number.isSafeInteger(candidate.bytes) || candidate.bytes < 0 || candidate.bytes > EVIDENCE_MAX_FILE_BYTES
-    || !timestamp(candidate.createdAt) || !timestamp(candidate.expiresAt) || Date.parse(candidate.expiresAt) <= Date.parse(candidate.createdAt)) return undefined;
+    || !timestamp(candidate.createdAt) || !timestamp(candidate.expiresAt) || Date.parse(candidate.expiresAt) <= Date.parse(candidate.createdAt)
+    || (candidate.retentionClass !== undefined && candidate.retentionClass !== "session" && candidate.retentionClass !== "review" && candidate.retentionClass !== "durable")) return undefined;
   return candidate as unknown as EvidenceArtifactDescriptor;
 }
 
@@ -284,3 +287,9 @@ export function cleanupEvidenceArtifacts(value: string | ReadonlyArray<EvidenceA
 }
 
 export const cleanupEvidenceArtifactDirectory = cleanupEvidenceArtifacts;
+
+/** Bounded startup/shutdown detection of stale evidence directories; no crash-leftover deletion is attempted. */
+export function scavengeEvidenceArtifactDirectories(options: TempScavengeOptions = {}): number {
+  return scavengeGodmodeTempDirectories(options);
+}
+export const scavengeEvidenceArtifacts = scavengeEvidenceArtifactDirectories;

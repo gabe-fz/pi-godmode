@@ -259,7 +259,7 @@ function sanitizedRecord(record: WorkflowRecord): WorkflowRecord {
   // Phase 3 gate records are authority-bearing completeness evidence. Unlike
   // optional prose, they may not be silently truncated or redacted by ledger
   // sanitization: omission or alteration would manufacture a different gate.
-  for (const key of ["primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence"] as const) {
+  for (const key of ["primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence", "completionCapsule"] as const) {
     const original = record[key];
     const persisted = (value as unknown as Record<string, unknown>)[key];
     if (original !== undefined && !exactPersistedValue(persisted, original)) {
@@ -1227,6 +1227,7 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
     ...(current.tddWaiverReference !== undefined ? { tddWaiverReference: current.tddWaiverReference } : {}),
     ...(current.scaleWaiverReference !== undefined ? { scaleWaiverReference: current.scaleWaiverReference } : {}),
     ...(current.interfaceEvidencePolicy !== undefined ? { interfaceEvidencePolicy: current.interfaceEvidencePolicy } : {}),
+    ...(current.latestCapsuleReference !== undefined ? { latestCapsuleReference: current.latestCapsuleReference } : {}),
   };
   // Check the unsanitized required state before redaction. A sanitized marker
   // is safe for secrets, but truncating required state would be omission.
@@ -1255,6 +1256,9 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
       : {}),
     ...(current.interfaceEvidencePolicy !== undefined
       ? { interfaceEvidencePolicy: current.interfaceEvidencePolicy }
+      : {}),
+    ...(current.latestCapsuleReference !== undefined
+      ? { latestCapsuleReference: sanitizeLedgerValue(current.latestCapsuleReference) }
       : {}),
   };
   // Recheck after redaction and retain all required keys. This protects
@@ -1384,7 +1388,11 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 /** Create a bounded terminal handoff object, never an acceptance decision. */
 export function createCompletionCapsule(record: WorkflowRecord, createdAt: string, asOf?: string): CompletionCapsule {
-  const validation = validateWorkflowRecord(record);
+  // Acceptance is assembled in two in-memory steps: first the fully gated
+  // accepted record, then this capsule, followed by one ledger append. The
+  // temporary absence of the capsule is allowed only inside this constructor;
+  // persisted accepted records remain strict.
+  const validation = validateWorkflowRecord(record, { allowMissingCompletionCapsule: true });
   if (!validation.ok) return capsuleFallback(record, createdAt);
   const current = validation.record;
   // A capsule is a terminal-time projection, so creation time is the default

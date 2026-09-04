@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import type { GodmodeMode } from "./mode.ts";
 import {
   appendWorkflowSnapshot,
+  createCompletionCapsule,
   LEDGER_CUSTOM_TYPE,
   type LedgerSessionManager,
   type LedgerAppender,
@@ -22,6 +23,7 @@ import {
   validateInterfaceEvidenceMatrix,
   validateInterfaceEvidenceMatrixDetailed,
   requiresInterfaceEvidence,
+  completionCapsuleReference,
 } from "./workflow-state.ts";
 import { normalizeCheckoutPath, verifyRedTestIdentity } from "./faculties.ts";
 import { MAX_REMEDIATION_ATTEMPTS, INTERFACE_SURFACES, INTERFACE_METHOD_BY_SURFACE, type AcceptanceCheckSpec, type EvidenceApplicabilityDecision, type InterfaceEvidenceRecord, type InterfaceSurface, type InterfaceEvidenceMethod } from "./types.ts";
@@ -95,6 +97,7 @@ const ArtifactReferenceSchema = Type.Union([
     bytes: Type.Optional(Type.Integer({ minimum: 0, maximum: 2 * 1024 * 1024 })),
     createdAt: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
     expiresAt: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
+    retentionClass: Type.Optional(StringEnum(["session", "review", "durable"] as const)),
   }, { additionalProperties: false }),
 ]);
 
@@ -189,6 +192,7 @@ const EvidenceInputSchema = Type.Object({
   result: StringEnum(["passed", "failed", "blocked"] as const),
   artifactInputPaths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 })),
   artifactPaths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 })),
+  retentionClass: Type.Optional(StringEnum(["session", "review", "durable"] as const)),
 }, { additionalProperties: false });
 const InterfaceEvidenceRecordsSchema = Type.Array(EvidenceInputSchema, { maxItems: 64 });
 const ScaleReviewSchema = Type.Object({
@@ -342,11 +346,16 @@ function workflowArtifact(value: unknown): string | BoundedEvidenceReference | u
   if (!workflowObject(value) || typeof value.id !== "string") throw new Error("Evidence reference must be a bounded ID or reference object.");
   const output: BoundedEvidenceReference = { id: workflowText(value.id, "artifactReference.id", 256) };
   for (const [key, entry] of Object.entries(value)) {
-    if (!["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt"].includes(key)) throw new Error("Evidence reference contains an unsupported field.");
+    if (!["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt", "retentionClass"].includes(key)) throw new Error("Evidence reference contains an unsupported field.");
     if (entry === undefined || key === "id") continue;
     if (key === "bytes") {
       if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0 || entry > 2 * 1024 * 1024) throw new Error("artifactReference.bytes must be a bounded integer.");
       output.bytes = entry;
+      continue;
+    }
+    if (key === "retentionClass") {
+      if (entry !== "session" && entry !== "review" && entry !== "durable") throw new Error("artifactReference.retentionClass is invalid.");
+      output.retentionClass = entry;
       continue;
     }
     const fieldValue = workflowText(entry, `artifactReference.${key}`, key === "source" ? 4 * 1024 : 1024);
@@ -538,7 +547,7 @@ const MATRIX_CHECK_INPUT_KEYS = new Set(["id", "surface", "method", "requirement
 const MATRIX_DECISION_INPUT_KEYS = new Set(["surface", "requirementIds", "applicability", "reason"]);
 const MATRIX_EVIDENCE_INPUT_KEYS = new Set([
   "acceptanceCheckId", "checkId", "checkSpecId", "surface", "method", "requirementIds", "scenario", "interaction", "invocation", "environment", "controlledEnvironment", "observedResult", "observedOutcome",
-  "result", "artifactInputPaths", "artifactPaths",
+  "result", "artifactInputPaths", "artifactPaths", "retentionClass",
 ]);
 
 function matrixSurface(value: unknown): value is InterfaceSurface {
@@ -615,6 +624,7 @@ interface MatrixEvidenceInput {
   observedResult: string;
   result: "passed" | "failed" | "blocked";
   artifactInputPaths: string[];
+  retentionClass: "session" | "review" | "durable";
 }
 
 function matrixEvidenceInputs(value: unknown, requirements: readonly string[]): MatrixEvidenceInput[] {
@@ -635,7 +645,9 @@ function matrixEvidenceInputs(value: unknown, requirements: readonly string[]): 
     const observedResult = workflowText(item.observedResult ?? item.observedOutcome, `interfaceEvidence[${index}].observedResult`, 16 * 1024);
     const result = item.result;
     if (result !== "passed" && result !== "failed" && result !== "blocked") throw new Error(`interfaceEvidence[${index}].result is invalid.`);
-    return { acceptanceCheckId, surface: item.surface, method: item.method, requirementIds, scenario, invocation, environment, observedResult, result, artifactInputPaths: paths };
+    const retentionClass = item.retentionClass;
+    if (retentionClass !== undefined && retentionClass !== "session" && retentionClass !== "review" && retentionClass !== "durable") throw new Error(`interfaceEvidence[${index}].retentionClass is invalid.`);
+    return { acceptanceCheckId, surface: item.surface, method: item.method, requirementIds, scenario, invocation, environment, observedResult, result, artifactInputPaths: paths, retentionClass: retentionClass ?? "session" };
   });
 }
 
@@ -759,6 +771,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       blockers: [],
       residualRisks: [],
       evidence: [],
+      completionCapsulePolicy: "required-v1",
       packetAuthor: "Primary",
       acceptanceChecks,
       authorityConstraints,
@@ -1092,6 +1105,8 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     const checkSpecs = matrixCheckSpecs(rawChecks, current.requirementIds);
     const decisions = matrixDecisions(rawDecisions, current.requirementIds, inspection.id, inspection.diffFingerprint, timestamp);
     const evidenceInputs = matrixEvidenceInputs(rawEvidence, current.requirementIds);
+    const retentionClasses = new Set(evidenceInputs.map((record) => record.retentionClass));
+    if (retentionClasses.size > 1) throw new Error("One nonempty interface evidence matrix must use one consistent retentionClass for every imported artifact and record.");
     const allPaths = evidenceInputs.flatMap((record) => record.artifactInputPaths);
     // Import only explicit paths supplied in the bounded action payload. No
     // command, browser, process, network, or discovered path is executed.
@@ -1101,7 +1116,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
         cwd: deps.cwd(),
         now: new Date(timestamp),
         expiresAt: new Date(Date.parse(timestamp) + EVIDENCE_ARTIFACT_TTL_MS).toISOString(),
-        retentionClass: "session",
+        retentionClass: evidenceInputs[0]?.retentionClass ?? "session",
       });
     let cursor = 0;
     try {
@@ -1132,8 +1147,8 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
           adapter: "primary-observed-artifact",
           adapterVersion: "1",
           redactionStatus: "verified-clean",
-          retentionClass: "session",
-          expiresAt: imported.artifacts[0]?.expiresAt ?? new Date(Date.parse(timestamp) + EVIDENCE_ARTIFACT_TTL_MS).toISOString(),
+          retentionClass: inputRecord.retentionClass,
+          expiresAt: imported.artifacts[cursor - 1]?.expiresAt ?? new Date(Date.parse(timestamp) + EVIDENCE_ARTIFACT_TTL_MS).toISOString(),
           inspectionId: inspection.id,
           diffFingerprint: inspection.diffFingerprint,
         };
@@ -1385,9 +1400,22 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     }
     const reason = input.reason === undefined ? "Primary accepted after the current Scale gate." : workflowText(input.reason, "reason", 8 * 1024);
     const matrixArtifacts = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null));
-    const result = commit(applyPhaseTransition(current, {
+    // Build the capsule from the fully gated accepted record, then append the
+    // accepted record plus capsule exactly once. No pre-capsule accepted state
+    // is committed or exposed to recovery.
+    const accepted = applyPhaseTransition(current, {
       to: "accepted", actor: "Primary", timestamp, reason, reference: `accept:${current.workItemId}`,
-    }), timestamp);
+    });
+    const completionCapsule = createCompletionCapsule(accepted, timestamp, timestamp);
+    const acceptedWithCapsule: WorkflowRecord = {
+      ...accepted,
+      completionCapsulePolicy: "required-v1",
+      completionCapsule,
+      latestCapsuleReference: completionCapsuleReference(completionCapsule),
+    };
+    const capsuleValidation = validateWorkflowRecord(acceptedWithCapsule);
+    if (!capsuleValidation.ok) throw new Error(`Acceptance completion capsule is malformed: ${capsuleValidation.reason}`);
+    const result = commit(capsuleValidation.record, timestamp);
     cleanupInspectionArtifacts(current.primaryInspection);
     if (matrixArtifacts.length > 0) cleanupEvidenceArtifacts(matrixArtifacts);
     return result;

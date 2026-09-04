@@ -18,6 +18,7 @@ import { SubagentsClient } from "./subagents-client.ts";
 import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.ts";
 import { verifyInspectionArtifacts, cleanupInspectionArtifacts, cleanupSupersededInspection } from "./inspection-artifacts.ts";
 import { cleanupEvidenceArtifacts } from "./evidence.ts";
+import { scavengeGodmodeTempDirectories } from "./security-text.ts";
 import { runDoctor } from "./doctor.ts";
 import { DoctorApplyManager } from "./doctor-apply.ts";
 import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission, BoundedEvidenceReference } from "./types.ts";
@@ -269,6 +270,10 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // Inspect stale own-prefix temporary artifacts for bounded observability;
+    // crash leftovers remain host-managed because pathname deletion is not
+    // race-safe. Active lifecycle cleanup remains explicit below.
+    scavengeGodmodeTempDirectories();
     currentCtx = ctx;
     inspectionForCleanup = undefined;
     await initializeGodmodeSession(mode, pi, ctx);
@@ -326,6 +331,9 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     await mode.shutdown();
     if (inspection) cleanupInspectionArtifacts(inspection);
     if (evidence.length > 0) cleanupEvidenceArtifacts(evidence);
+    // Detection is read-only; crash leftovers defer to host OS temporary
+    // retention after explicitly held artifacts are cleaned above.
+    scavengeGodmodeTempDirectories();
     workflowView = undefined;
     workflowRecord = undefined;
     evidenceForCleanup = [];

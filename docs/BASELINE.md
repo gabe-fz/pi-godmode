@@ -4,13 +4,13 @@
 **Checkpoint commit:** `fcb329ed1a075ea26f542704664b9aad0d0b8028`  
 **Runtime:** Node `v26.8.1`, npm `11.19.0`
 
-This report records the current runtime boundary after the Phase 1 work. The Phase 1 implementation checkpoint is recorded as `c0eab03`; `fcb329ed1a075ea26f542704664b9aad0d0b8028` is the subsequent implementation-plan checkpoint used for this baseline. A pre-Phase-1 baseline was **not captured before mutation**. The statements below therefore describe the observed post-Phase-1 state, not a before/after measurement.
+This report records the current runtime boundary after the Phase 1 work. The Phase 1 implementation checkpoint is recorded as `c0eab03`; `fcb329ed1a075ea26f542704664b9aad0d0b8028` is the subsequent validation checkpoint used for this baseline. A pre-Phase-1 baseline was **not captured before mutation**. The statements below therefore describe the observed post-Phase-1 state, not a before/after measurement.
 
-The normative source for the compatibility boundary is [`SPEC.md`](../SPEC.md), especially sections 6–18. The report remains a historical post-Phase-1 baseline. Since it was recorded, Phases 2 and 3 implemented the packet/TDD/Hand-integrity, Primary-inspection, mandatory-Scale, waiver, and remediation gates, Phase 4 implemented the interface-evidence matrix and bounded artifact importer, and Phases 5–6 implemented bounded doctor diagnosis, previewed allowlisted apply/recovery, and safe legacy hint reconciliation described in [`docs/WORKFLOW.md`](./WORKFLOW.md) and [`docs/DOCTOR.md`](./DOCTOR.md).
+The normative source for the compatibility boundary is [`SPEC.md`](../SPEC.md), especially sections 6–18. The report remains a historical post-Phase-1 baseline. Since it was recorded, the shipped workflow implemented packet/TDD/Hand-integrity, Primary-inspection, mandatory-Scale, waiver, remediation, interface-evidence, bounded doctor diagnosis, previewed allowlisted apply/recovery, and safe legacy hint reconciliation described in [`docs/WORKFLOW.md`](./WORKFLOW.md) and [`docs/DOCTOR.md`](./DOCTOR.md).
 
 ## Observed compatibility invariants
 
-These twelve invariants are the current compatibility contract observed from SPEC sections 6–18 and the Phase 1 checkpoint. They are constraints on later work, not claims that every target workflow gate already exists.
+These twelve invariants are the current compatibility contract observed from SPEC sections 6–18 and the Phase 1 checkpoint. They are compatibility constraints, while the shipped workflow gate is documented separately.
 
 1. **One command and compatible bare behavior (SPEC §6).** Godmode owns one `/godmode` command. In the TUI, a bare command toggles the mode; outside the TUI it reports bounded state without mutation. Unknown arguments do not silently toggle the mode.
 2. **Default-on startup with rollback (SPEC §§6, 10).** Session startup establishes the ordinary active-tool baseline before attempting default-on enablement. Trust, configuration, capability, model, registration, preflight, or tool failures leave startup running and roll back partial Godmode changes to `off`.
@@ -22,12 +22,12 @@ These twelve invariants are the current compatibility contract observed from SPE
 8. **Public asynchronous substrate and bounded deadlines (SPEC §§3, 7, 9, 12, 15, 17–18).** Child launch, status, steering, stopping, completion, artifacts, and FleetView remain supplied by documented `pi-subagents` public APIs. Runs complete asynchronously; a soft timeout leads to a checkpoint and at most one bounded extension before a finite hard backstop.
 9. **Native supervisor escalation (SPEC §§7.3, 15).** Material product, UX, architecture, public-interface, security/data, dependency/migration, version-control, release, or deployment questions go to the Primary through the native supervisor channel. Godmode does not create a parallel authority or messaging protocol.
 10. **Shared-checkout mutation guard (SPEC §13).** Godmode uses the Primary checkout, blocks Primary mutation tools while Hand owns it, and leaves only the documented read-only inspection and web tools available during that interval. Godmode does not perform automatic git mutation.
-11. **Primary review and acceptance authority (SPEC §§6, 14, 18).** A Hand result is a handoff and evidence, not automatic completion. The Primary must inspect the complete relevant diff and materially changed files and independently run required validation before reporting completion. Target workflow enforcement is listed separately below.
+11. **Primary review and acceptance authority (SPEC §§6, 14, 18).** A Hand result is a handoff and evidence, not automatic completion. The Primary must inspect the complete relevant diff and materially changed files and independently run required validation before reporting completion. Shipped workflow enforcement is listed separately below.
 12. **Trust and release boundary (SPEC §§4, 7, 15–16).** Active Godmode requires a Pi-trusted project. Faculties run as the same-user as the Primary; tool allowlists are policy controls, **not an OS sandbox**. Repository content, external context, and child output are untrusted, and Godmode does not automatically commit, push, publish, release, or deploy.
 
 ## Checkpoint validation evidence
 
-The implementation-plan checkpoint at `fcb329ed1a075ea26f542704664b9aad0d0b8028` records the following independently reviewed evidence:
+The validation checkpoint at `fcb329ed1a075ea26f542704664b9aad0d0b8028` records the following independently reviewed evidence:
 
 - `npm run typecheck` — passed.
 - `npm test` — **76 tests passed**.
@@ -50,11 +50,11 @@ The 76-test count is the recorded pre-Phase-0-fixture checkpoint evidence; it is
 | API | Missing from this package baseline | No API surface or controlled request fixture is present. |
 | CLI/executable | Missing from this package baseline | No CLI surface or executable evidence fixture is present. |
 
-The fixture matrix establishes inspection inputs only. It does not substitute PTY, browser, API, CLI, persistence-upgrade, or other interface-matched evidence where a future work item makes one applicable.
+The fixture matrix establishes inspection inputs only. Repository readiness checks separately exercise the applicable controlled TUI handler, package consumer, disposable persistence, doctor/apply, build/config, and documentation/package links; browser UI and HTTP API remain not applicable because this package ships neither.
 
-## Intentionally red future contracts
+## Historical red contracts
 
-`test/contracts/phase0-red.test.ts` originally captured five Primary-authored expected failures for FR-1 (two contracts), FR-6, FR-10, and FR-11. The two FR-1 contracts became green in Phase 2, the FR-6 contract became green in Phase 3, and the FR-10/FR-11 diagnostic contracts became green in Phase 5. FR-2 is historical green Phase-1 evidence, not fabricated red evidence.
+`test/contracts/phase0-red.test.ts` originally captured five Primary-authored expected failures for FR-1 (two contracts), FR-6, FR-10, and FR-11. The FR-1, FR-6, FR-10, and FR-11 contracts are now green under the shipped workflow. FR-2 is historical green Phase-1 evidence, not fabricated red evidence.
 
 ## Post-baseline implementation status
 
@@ -62,9 +62,9 @@ This table distinguishes the historical baseline from subsequently implemented b
 
 | Capability | Current status |
 | --- | --- |
-| `/godmode doctor` diagnosis plus Phase 6 previewed apply/recovery grammar | **Implemented in Phases 5–6** |
-| Primary-authored packet admission before Hand (classification, specification, red-test/TDD admission, and Hand test-integrity/scope gates) | **Implemented in Phase 2 after this baseline** |
-| Mandatory Scale acceptance gates for feature/bugfix work, including waiver/remediation enforcement | **Implemented in Phase 3** |
-| Interface-matched evidence matrix, Primary-only recording, and bounded passive artifact importer | **Implemented in Phase 4** |
+| `/godmode doctor` diagnosis plus previewed apply/recovery grammar | **Implemented and bounded** |
+| Primary-authored packet admission before Hand (classification, specification, red-test/TDD admission, and Hand test-integrity/scope gates) | **Implemented after this historical baseline** |
+| Mandatory Scale acceptance gates for feature/bugfix work, including waiver/remediation enforcement | **Implemented** |
+| Interface-matched evidence matrix, Primary-only recording, and bounded passive artifact importer | **Implemented** |
 
-The current runtime now includes the Phase 2 packet and Hand-admission gates, Phase 3 Primary inspection/mandatory Scale/remediation gates, Phase 4 interface-matched matrix/passive-artifact controls, and Phase 5–6 bounded doctor diagnosis with previewed allowlisted apply/recovery while retaining the compatibility invariants recorded above. See [`docs/DOCTOR.md`](./DOCTOR.md) for the implemented diagnostic/apply boundary and [`docs/WORKFLOW.md`](./WORKFLOW.md) for the implemented gate boundary.
+The current runtime now includes packet and Hand-admission gates, Primary inspection/mandatory Scale/remediation gates, interface-matched matrix/passive-artifact controls, bounded doctor diagnosis with previewed allowlisted apply/recovery, accepted completion capsules, retention scavenging, and FR-13 package/documentation controls while retaining the compatibility invariants recorded above. See [`docs/DOCTOR.md`](./DOCTOR.md) for the implemented diagnostic/apply boundary and [`docs/WORKFLOW.md`](./WORKFLOW.md) for the implemented gate boundary.

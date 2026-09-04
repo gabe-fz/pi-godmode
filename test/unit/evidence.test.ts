@@ -14,8 +14,9 @@ test("bounded evidence importer copies clean explicit text and verifies tamper/e
   const root = mkdtempSync(join(tmpdir(), "godmode-evidence-unit-"));
   const input = join(root, "result.txt");
   writeFileSync(input, "status: passed\n");
-  const imported = importEvidenceArtifacts([input], { cwd: root, now: new Date("2026-09-04T06:00:00.000Z") });
+  const imported = importEvidenceArtifacts([input], { cwd: root, now: new Date("2026-09-04T06:00:00.000Z"), retentionClass: "review" });
   const artifact = imported.artifacts[0]!;
+  assert.equal(artifact.retentionClass, "review");
   assert.notEqual(artifact.source, input);
   assert.equal(readFileSync(artifact.source, "utf8"), "status: passed\n");
   assert.equal(verifyEvidenceArtifact(artifact, new Date("2026-09-04T06:01:00.000Z")), true);

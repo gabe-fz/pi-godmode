@@ -183,6 +183,36 @@ test("fresh packets opt into Phase 4 for every Primary classification", () => {
   }
 });
 
+test("Phase 4 records a valid all-not-applicable matrix without evidence artifacts", () => {
+  const runtime = runtimeController();
+  specify(runtime);
+  inspect(runtime);
+  const result = runtime.controller.execute({
+    action: "record-evidence",
+    acceptanceCheckSpecs: [],
+    applicabilityDecisions: surfaces.map((surface) => ({
+      surface,
+      requirementIds: ["FR-8"],
+      applicability: "not-applicable",
+      reason: `This controlled work item does not expose the ${surface} surface.`,
+    })),
+    interfaceEvidence: [],
+  });
+  assert.equal(result.phase, "evidence-ready");
+  assert.equal(runtime.getRecord()?.nextGate, "scale-review-or-waiver");
+  assert.equal(validateInterfaceEvidenceMatrix(runtime.getRecord()), true);
+});
+
+test("Phase 4 rejects mixed retention classes in one nonempty matrix", () => {
+  const runtime = runtimeController();
+  specify(runtime);
+  inspect(runtime);
+  const input = matrixInput(runtime, "passed") as { interfaceEvidence: Array<Record<string, unknown>> } & Record<string, unknown>;
+  input.interfaceEvidence[0]!.retentionClass = "session";
+  input.interfaceEvidence[1]!.retentionClass = "review";
+  assert.throws(() => runtime.controller.execute(input), /retentionClass|retention class|consistent/i);
+});
+
 test("Phase 4 records all surfaces, never executes invocation text, retries failed evidence, and recovers accepted snapshots", () => {
   const runtime = runtimeController();
   specify(runtime);
@@ -268,6 +298,14 @@ test("Phase 4 records all surfaces, never executes invocation text, retries fail
   assert.equal(reviewed.phase, "review-passed");
   const accepted = runtime.controller.execute({ action: "accept", reason: "Primary accepted after current interface evidence and Scale review." });
   assert.equal(accepted.phase, "accepted");
+  const acceptedRecord = runtime.getRecord()!;
+  assert(acceptedRecord.completionCapsule, "accepted runtime record must carry a completion capsule");
+  assert.equal(acceptedRecord.completionCapsule.phase, "accepted");
+  assert.equal(acceptedRecord.completionCapsule.accepted, true);
+  assert.equal(acceptedRecord.latestCapsuleReference?.includes(acceptedRecord.workItemId), true);
+  const forgedCapsule = cloneForTest(acceptedRecord);
+  forgedCapsule.completionCapsule!.phase = "review-passed";
+  assert.equal(validateWorkflowRecord(forgedCapsule).ok, false, "forged capsule identity is rejected");
   const recovered = reconstructActiveSnapshot(runtime.manager.getBranch(), runtime.manager.getSessionId(), "phase4-integration");
   assert.equal(recovered.status, "ok");
   if (recovered.status === "ok") {

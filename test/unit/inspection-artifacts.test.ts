@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import {
   cleanupInspectionArtifacts,
   cleanupSupersededInspection,
   verifyInspectionArtifacts,
+  scavengeInspectionArtifacts,
 } from "../../src/inspection-artifacts.ts";
 import type { PrimaryInspection } from "../../src/types.ts";
 
@@ -100,6 +101,39 @@ test("remediation invalidation cleans the superseded inspection before fresh ins
     assert.equal(existsSync(captured.artifactDirectory), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bounded stale detector leaves stale, symlink, and raced own-prefix directories untouched", () => {
+  const root = mkdtempSync(join(tmpdir(), "godmode-scavenge-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "godmode-scavenge-outside-"));
+  try {
+    const stale = join(root, "pi-godmode-inspection-stale");
+    const fresh = join(root, "pi-godmode-inspection-fresh");
+    const link = join(root, "pi-godmode-inspection-link");
+    const raced = join(root, "pi-godmode-inspection-raced");
+    mkdirSync(stale);
+    mkdirSync(fresh);
+    mkdirSync(raced);
+    writeFileSync(join(stale, "artifact"), "stale");
+    writeFileSync(join(raced, "artifact"), "raced");
+    utimesSync(stale, new Date(0), new Date(0));
+    utimesSync(raced, new Date(0), new Date(0));
+    symlinkSync(outside, link);
+
+    // The detector is intentionally read-only. This source assertion guards
+    // the no-deletion contract in addition to the observable filesystem proof.
+    const implementation = readFileSync(new URL("../../src/security-text.ts", import.meta.url), "utf8");
+    assert.doesNotMatch(implementation, /\b(?:rmSync|rmdirSync|unlinkSync|renameSync)\s*\(/u);
+    assert.equal(scavengeInspectionArtifacts({ tmpRoot: root, now: new Date("2026-09-04T00:00:00.000Z") }), 2);
+    assert.equal(existsSync(join(stale, "artifact")), true);
+    assert.equal(existsSync(join(raced, "artifact")), true);
+    assert.equal(existsSync(fresh), true);
+    assert.equal(existsSync(link), true);
+    assert.equal(existsSync(outside), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
 

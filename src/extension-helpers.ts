@@ -162,25 +162,10 @@ export function createGodmodeCommandHandler(
         return;
       }
       try {
-        if (command !== "apply-preview" && command.action !== "apply-replacement-preview") {
-          // Re-read the host gates after waiting: a faculty or trust change
-          // during the wait must not turn into a mutation race.
-          let stillTrusted = false;
-          try { stillTrusted = context.isProjectTrusted?.() === true; } catch { /* trust failures deny below */ }
-          if (!stillTrusted) {
-            deny("Godmode doctor apply refused: project trust changed while waiting; no files were changed.");
-            return;
-          }
-          const currentActiveFaculty = dependencies.mode.snapshot.activeRun?.faculty;
-          if (currentActiveFaculty) {
-            deny(`Godmode doctor apply refused while faculty ${currentActiveFaculty} became active; no files were changed.`);
-            return;
-          }
-        }
-        const applyOptions: DoctorApplyOptions = { trusted, activeFaculty };
         if (command === "apply-preview" || command.action === "apply-replacement-preview") {
           const replacement = command !== "apply-preview" && command.action === "apply-replacement-preview";
           const report = doctor(context.cwd);
+          const applyOptions: DoctorApplyOptions = { trusted, activeFaculty };
           const previewOptions = replacement ? { ...applyOptions, replacePath: command.path } : applyOptions;
           const preview = dependencies.createApplyPreview
             ? dependencies.createApplyPreview(context.cwd, report, previewOptions)
@@ -192,14 +177,33 @@ export function createGodmodeCommandHandler(
         // At this point the only remaining non-toggle commands are the two
         // token-bearing object states, so confirmation/recovery is explicit.
         await context.waitForIdle();
-        // Host idle proof is mandatory for effectful confirmation/recovery;
-        // waiting alone is not proof, and a missing method is denial.
-        if (context.isIdle?.() !== true) {
+        // Re-read every effectful host gate after waiting. Waiting alone is
+        // not proof: trust, affirmative idle, and no active faculty must all
+        // describe this post-wait snapshot, not the pre-wait observation.
+        let postWaitTrusted = false;
+        try { postWaitTrusted = context.isProjectTrusted?.() === true; } catch { /* trust failures deny below */ }
+        let postWaitIdle = false;
+        // A missing/false/throwing idle proof is the fail-closed equivalent
+        // of `context.isIdle?.() !== true`.
+        try { postWaitIdle = context.isIdle?.() === true; } catch { /* idle failures deny below */ }
+        const postWaitSnapshot = dependencies.mode.snapshot;
+        const postWaitActiveFaculty = postWaitSnapshot.activeRun?.faculty;
+        if (!postWaitTrusted) {
+          deny("Godmode doctor apply refused: project trust changed while waiting; no files were changed.");
+          return;
+        }
+        if (!postWaitIdle) {
           deny("Godmode doctor apply refused while the session is not affirmatively idle; no files were changed.");
           return;
         }
+        if (postWaitActiveFaculty) {
+          deny(`Godmode doctor apply refused while faculty ${postWaitActiveFaculty} became active; no files were changed.`);
+          return;
+        }
         const tokenCommand = command;
-        const effectfulOptions: DoctorApplyOptions = { ...applyOptions, isIdle: true };
+        // Construct effectful options solely from the post-wait proof. The
+        // explicit null is required; pre-wait faculty state is never reused.
+        const effectfulOptions: DoctorApplyOptions = { trusted: postWaitTrusted, activeFaculty: null, isIdle: postWaitIdle };
         const result = tokenCommand.action === "apply-confirm"
           ? (dependencies.applyPreview ?? ((root, token, options) => applyDoctorPreview(root, token, { ...options, ...(dependencies.doctorApplyManager ? { manager: dependencies.doctorApplyManager } : {}) })))(context.cwd, tokenCommand.token, effectfulOptions)
           : (dependencies.recoverPreview ?? ((root, token, options) => recoverDoctorPreview(root, token, { ...options, ...(dependencies.doctorApplyManager ? { manager: dependencies.doctorApplyManager } : {}) })))(context.cwd, tokenCommand.token, effectfulOptions);

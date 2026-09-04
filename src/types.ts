@@ -403,6 +403,8 @@ export interface BoundedEvidenceReference {
   bytes?: number;
   createdAt?: string;
   expiresAt?: string;
+  /** Requested retention class for imported evidence descriptors. */
+  retentionClass?: "session" | "review" | "durable";
 }
 export type EvidenceReference = BoundedEvidenceReference;
 
@@ -623,6 +625,10 @@ export interface WorkflowRecord {
   scaleWaiverReference?: string;
   changedScopeSummary?: string;
   latestCapsuleReference?: string;
+  /** Additive policy distinguishes new acceptance from legacy schema-v1 snapshots. */
+  completionCapsulePolicy?: "required-v1";
+  /** Compact accepted/terminal snapshot; raw artifacts and transcripts are never included. */
+  completionCapsule?: CompletionCapsule;
   /** Current bounded Phase 3 gate records. Raw diffs/transcripts are never retained. */
   primaryInspection?: PrimaryInspection;
   /** Additive Phase 4 policy and current interface-matched evidence matrix. */

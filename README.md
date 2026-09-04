@@ -8,7 +8,7 @@ Godmode exposes three constrained faculties:
 - **Hand** — bounded implementation; and
 - **Scale** — independent read-only review.
 
-The Primary remains the sole authority for intent, decisions, orchestration, review, acceptance, and user communication. Phase 6 adds a bounded, preview-first doctor apply path with safe legacy hint reconciliation.
+The Primary remains the sole authority for intent, decisions, orchestration, review, acceptance, and user communication. The shipped workflow includes bounded, preview-first doctor apply with safe legacy hint reconciliation, mandatory Scale review, red-test gates, interface-matched evidence, redaction, and retention controls.
 
 ## Documentation map
 
@@ -17,7 +17,7 @@ The Primary remains the sole authority for intent, decisions, orchestration, rev
 - [`docs/EVIDENCE.md`](./docs/EVIDENCE.md) — interface-matched evidence expectations and evidence security, redaction, and retention.
 - [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md) — canonical workflow state, session ledgers, branch snapshots, and token-budget rules.
 - [`docs/DOCTOR.md`](./docs/DOCTOR.md) — bounded doctor diagnosis, previewed apply/recovery, and legacy hint safety.
-- [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — temporary ordered plan for implementing the target design in a later session; delete it when its criterion is met.
+- [`docs/BASELINE.md`](./docs/BASELINE.md) — compatibility baseline and bounded validation record.
 
 ## Install
 
@@ -57,7 +57,7 @@ There is one Godmode command. In the TUI, bare `/godmode` toggles the mode; outs
 
 While enabled, arbitrary `subagent` and `subagent_wait` surfaces are replaced by `godmode_delegate` and `godmode_control`. Only one faculty may be active. Eye and Scale are read-only; Hand is the only mutation-capable faculty, and Primary mutation is guarded while Hand owns the shared checkout. Faculty runs complete asynchronously through pi-subagents. A handoff is evidence, not acceptance.
 
-`/godmode doctor` performs a bounded synchronous static assessment in every host mode. It never toggles, waits, delegates, executes discovered commands, accesses the network, or writes project files. `/godmode doctor --apply` returns a read-only preview and one-time token; the registered command requires affirmative project trust (missing trust denies), while only explicit `--confirm <token>` can write the two exact allowlisted targets after affirmative trust and explicit host idle proof (missing/false idle denies). Exact `--replace <path>` previews provide owner-only backup and one-time process-local recovery; post-write verification failures automatically attempt verified rollback before retaining a recovery handle. See [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+`/godmode doctor` performs a bounded synchronous static assessment in every host mode. It never toggles, waits, delegates, executes discovered commands, accesses the network, or writes project files. `/godmode doctor --apply` returns a read-only preview and one-time token; the registered command requires affirmative project trust (missing trust denies), while only explicit `--confirm <token>` can write the two exact allowlisted targets after affirmative trust, explicit host idle proof, and an explicit `activeFaculty: null` proof (missing/false proofs deny). Exact `--replace <path>` previews provide owner-only backup and one-time process-local recovery; post-write verification failures automatically attempt verified rollback before retaining a recovery handle. See [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ## Trust boundary
 
@@ -71,4 +71,6 @@ npm run typecheck
 npm test
 ```
 
-The executable runtime and security contract remain in [`SPEC.md`](./SPEC.md); diagnosis and previewed apply/recovery are implemented without automatic command execution or legacy-file mutation. Recovery handles are process-local and are not crash-persistent.
+The executable runtime and security contract remain in [`SPEC.md`](./SPEC.md); diagnosis and previewed apply/recovery are implemented without automatic command execution or legacy-file mutation. Active inspection, evidence, and recovery artifacts are explicitly cleaned through their held lifecycle references; expiry makes an artifact unusable even if its bytes remain. Crash leftovers defer to host OS temporary-file retention because automatic pathname deletion cannot be made race-safe with this runtime. Recovery handles are process-local and are not crash-persistent. Repository readiness checks use controlled local TUI-handler, package-consumer, disposable-session, doctor/apply, build/config, and docs/package checks; browser UI and HTTP API are not applicable because this package ships neither.
+
+**FR-13 package/documentation contract:** packed contents include `README.md`, `SPEC.md`, `docs/`, source, and license; all shipped relative links resolve, examples are bounded/non-networked, and docs distinguish shipped behavior from proposals.

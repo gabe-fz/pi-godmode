@@ -1,12 +1,12 @@
-# Evidence and verification contract
+# Evidence and verification contract (FR-8)
 
-> **Design status:** Phase 4 interface-matched evidence is implemented and Phase 5 doctor can report its canonical verification needs. The controller and doctor record/import no executable project activity: doctor remains bounded static diagnosis and does not execute commands, browsers, processes, migrations, or network requests.
+> **Shipped behavior:** Interface-matched evidence is implemented and doctor reports its canonical verification needs. The controller and doctor record/import no executable project activity: doctor remains bounded static diagnosis and does not execute commands, browsers, processes, migrations, or network requests.
 
 Evidence proves an observable requirement through the interface a user or downstream consumer actually uses. A unit test of an internal helper is useful but is not a substitute when the contract is a browser, TUI, API, CLI, library, persistence, build/configuration, or documentation interface. The Primary chooses the smallest controlled check that matches each requirement and records its result in the session ledger.
 
 ## Evidence record
 
-A current matrix is recorded with the `godmode_workflow` action `record-evidence` (or `record-evidence-matrix`) only after a complete Phase 3 inspection. Every check spec and evidence record carries the canonical method for its surface: `browser-ui=real-browser-flow`, `tui=deterministic-pty`, `api=controlled-request`, `cli=executable-invocation`, `library=downstream-consumer`, `persistence-migration=disposable-storage`, `build-config=supported-build-config-check`, and `documentation=rendered-doc-validation`. Unit-test, mocked, internal, and static methods cannot satisfy a surface. Check specs and applicability decisions are Primary-authored; the controller stamps actor, timestamps, inspection fingerprint, fixed `primary-observed-artifact` adapter version `1`, redaction status, retention, and expiry. Invocation text is provenance, never executable input.
+A current matrix is recorded with the `godmode_workflow` action `record-evidence` (or `record-evidence-matrix`) only after a complete inspection. Every check spec and evidence record carries the canonical method for its surface: `browser-ui=real-browser-flow`, `tui=deterministic-pty`, `api=controlled-request`, `cli=executable-invocation`, `library=downstream-consumer`, `persistence-migration=disposable-storage`, `build-config=supported-build-config-check`, and `documentation=rendered-doc-validation`. Unit-test, mocked, internal, and static methods cannot satisfy a surface. Check specs and applicability decisions are Primary-authored; the controller stamps actor, timestamps, inspection fingerprint, fixed `primary-observed-artifact` adapter version `1`, redaction status, requested retention class, and expiry. Invocation text is provenance, never executable input.
 
 Each required check has an evidence record containing:
 
@@ -16,11 +16,11 @@ Each required check has an evidence record containing:
 - controlled environment/version and fixture or test-data reference;
 - observed exit status, response, UI/terminal result, or assertion result;
 - bounded output excerpt or artifact reference (not an unbounded transcript);
-- timestamp and canonical actor (`Primary`, `Hand`, or `Scale`; “God” is only an informal label for `Primary`);
+- timestamp and canonical actor (`Primary`; faculty reports are inputs, not interface-evidence authority);
 - redaction/retention classification; and
-- result: `passed`, `failed`, or `blocked` with a reason in the observed outcome; Phase 4 has no generic evidence waiver.
+- result: `passed`, `failed`, or `blocked` with a reason in the observed outcome. The interface matrix has no generic evidence waiver.
 
-A faculty's statement that it ran a command is a lead to evidence, not evidence by itself. The Primary inspects the actual result and independently runs acceptance checks. Evidence artifacts should be content-addressed or otherwise uniquely named so a later result cannot be mistaken for the current one.
+A faculty's statement that it ran a command is a lead to evidence, not evidence by itself. The Primary inspects the actual result and independently runs acceptance checks. Evidence artifacts should be content-addressed or otherwise uniquely named so a later result cannot be mistaken for the current one. Imported descriptors persist `retentionClass` (`session`, `review`, or `durable`) consistently with the interface record.
 
 ## Interface-matched matrix
 
@@ -39,7 +39,7 @@ For a feature or bugfix, every applicable row must map to one or more numbered f
 
 ## Evidence gates
 
-1. **Before Hand:** God authors red tests for executable feature/bugfix requirements, observes the intended failure, and records it. If TDD is waived, record the narrow waiver and compensating check.
+1. **Before Hand:** The Primary authors red tests for executable feature/bugfix requirements, observes the intended failure, and records it. If TDD is waived, record the narrow waiver and compensating check.
 2. **After Hand:** Hand records focused green verification; the Primary repeats required checks through the matching interface and inspects the complete diff and materially changed files.
 3. **Scale:** Scale independently inspects source, diff, requirements, red-test evidence, and evidence records. For feature/bugfix items, Scale review is mandatory unless a permitted, recorded waiver exists.
 4. **After remediation:** The Primary repeats affected interface checks and Scale performs a fresh re-review. A failed or blocked current matrix may be retried against the same inspection; a passing current matrix cannot be replaced. Old evidence remains in append-only snapshots, while superseded descriptors leave the active generic evidence projection and are cleaned only after replacement acknowledgement.
@@ -49,7 +49,7 @@ For a feature or bugfix, every applicable row must map to one or more numbered f
 
 Prefer disposable repositories, test accounts, local services, deterministic fixtures, pinned dependency/runtime versions, fixed terminal dimensions, and stable clocks. State what could make a check non-reproducible: network dependency, browser rendering, timing, external provider, platform-specific behavior, or unavailable credentials. A blocked check is visible residual risk; it is not a pass.
 
-Avoid tests that only assert implementation internals when the requirement is observable elsewhere. Conversely, do not demand browser/PTY/integration setup for an explicitly internal refactor with no changed public or user-facing contract; record the applicability decision.
+Avoid tests that only assert implementation internals when the requirement is observable elsewhere. Conversely, do not demand browser/PTY/integration setup for an explicitly internal refactor with no changed public or user-facing contract; record the applicability decision. In this repository, controlled checks use the registered TUI handler with fake UI (no standalone PTY executable), public package extension registration/consumer import, disposable SessionManager persistence/reopen, doctor/apply CLI-like calls, typecheck/configuration, and docs/package links. Browser UI and HTTP API are explicitly not applicable; no network/browser/process execution is added.
 
 ## Security, redaction, and retention
 
@@ -63,6 +63,6 @@ Repository files, web pages, test responses, screenshots, terminal output, and f
 - reject artifacts with unbounded size, binary/NUL content, credentials/tokens/cookies/private keys/signed URLs, `.env` payloads, embedded active content, or unexpected external paths; authority evidence is never silently redacted; and
 - record provenance and a redaction status so “sanitized” is auditable rather than assumed.
 
-Raw evidence is bounded and retained only for the configured review/incident period. The terminal completion capsule keeps a compact result, requirement IDs, final status, artifact references, and residual risks after raw details expire. Accepted snapshots remain structurally recoverable after temporary artifacts are cleaned; tamper or expiry blocks active Scale/acceptance gates rather than silently passing. Session ledger entries may be purged with the session according to host policy. Durable project docs receive only reviewed, redacted, cross-session knowledge; they must not become a dump of transcripts or credentials. Retention and purge actions must not silently change an acceptance decision: preserve the capsule and a reason when an artifact is unavailable.
+Raw evidence is bounded and retained only for the configured review/incident period. Imported descriptors and records carry the requested `session`, `review`, or `durable` retention class. The terminal completion capsule keeps a compact result, requirement IDs, final status, artifact references, and residual risks after raw details expire. Accepted snapshots remain structurally recoverable after temporary artifacts are cleaned; tamper or expiry blocks active Scale/acceptance gates rather than silently passing. Session ledger entries may be purged with the session according to host policy. Durable project docs receive only reviewed, redacted, cross-session knowledge; they must not become a dump of transcripts or credentials. Startup/shutdown performs a bounded read-only stale-candidate detection pass in sorted batches of at most 64 per prefix using `lstat` and age checks; it never follows symlinks and never removes or renames crash leftovers. Active inspection/evidence/recovery artifacts are explicitly cleaned through held lifecycle references, while expiry makes an artifact unusable. Crash leftovers defer to host OS temporary-file retention because automatic pathname deletion cannot be made race-safe with this runtime. Retention and purge actions must not silently change an acceptance decision: preserve the capsule and a reason when an artifact is unavailable.
 
 Do not automatically inject a full evidence directory, transcript, or ever-growing `PROJECT_MEMORY.md` into model context. Use the token-efficient state rules in [`STATE_AND_MEMORY.md`](./STATE_AND_MEMORY.md).

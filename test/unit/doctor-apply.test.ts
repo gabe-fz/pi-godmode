@@ -7,7 +7,7 @@ import { runDoctor } from "../../src/doctor.ts";
 import { DOCTOR_APPLY_TOKEN_TTL_MS, DoctorApplyManager } from "../../src/doctor-apply.ts";
 
 function project(): string { return mkdtempSync(join(tmpdir(), "godmode-apply-unit-")); }
-const effectful = { trusted: true, isIdle: true } as const;
+const effectful = { trusted: true, activeFaculty: null, isIdle: true } as const;
 
 test("doctor apply preview is pure and confirmation creates only both allowlisted targets", () => {
   const root = project();
@@ -60,6 +60,8 @@ test("direct effectful APIs fail closed on missing or negative trust/idle while 
     const preview = manager.createPreview(root, runDoctor(root), { trusted: false, isIdle: false });
     assert.equal(manager.apply(root, preview.token).status, "denied");
     assert.equal(manager.apply(root, preview.token, { trusted: false, isIdle: true }).status, "denied");
+    assert.equal(manager.apply(root, preview.token, { trusted: true, activeFaculty: undefined, isIdle: true }).status, "denied");
+    assert.equal(manager.apply(root, preview.token, { trusted: true, activeFaculty: "hand", isIdle: true }).status, "denied");
     assert.equal(manager.apply(root, preview.token, { trusted: true, isIdle: false }).status, "denied");
     assert.equal(readdirSync(root).length, 0);
     assert.equal(manager.apply(root, preview.token, effectful).status, "applied");

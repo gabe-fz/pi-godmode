@@ -1,10 +1,10 @@
-# Godmode target workflow
+# Godmode shipped workflow
 
-> **Implementation status:** Phases 2–6 are implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence and an all-surface interface-evidence matrix, binds Scale reviews to the exact latest completed run, enforces bounded waivers, invalidates stale gate evidence through capped remediation before fresh inspection and evidence, and provides bounded doctor diagnosis plus previewed allowlisted apply/recovery. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
+> **Shipped behavior:** The normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence and an all-surface interface-evidence matrix, binds Scale reviews to the exact latest completed run, enforces bounded waivers, invalidates stale gate evidence through capped remediation before fresh inspection and evidence, and provides bounded doctor diagnosis plus previewed allowlisted apply/recovery. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md). Repository-specific controlled interface checks are described in §12; this document does not claim unsupported browser or HTTP execution.
 
 ## 1. Authority and unit of work
 
-The **Primary** is the only authority for user intent, product scope, architecture, security/data policy, dependencies, migrations, release actions, review, acceptance, and user communication. In this workflow, **God** is an informal role label for that same Primary, never a separate actor or authority. Ledger and evidence records use the canonical actor name `Primary`. Eye, Hand, and Scale execute bounded assignments and escalate material ambiguity through the supervisor; they do not invent authority.
+The **Primary** is the only authority for user intent, product scope, architecture, security/data policy, dependencies, migrations, release actions, review, acceptance, and user communication. Ledger and evidence records use the canonical actor name `Primary`. Eye, Hand, and Scale execute bounded assignments and escalate material ambiguity through the supervisor; they do not invent authority.
 
 A work item is the smallest independently reviewable outcome. A work item is classified before implementation:
 
@@ -18,9 +18,9 @@ A work item is the smallest independently reviewable outcome. A work item is cla
 
 Classification is recorded once in the session ledger. If work spans classifications, split it into separately gated work items or escalate the boundary to the Primary.
 
-## 2. God-authored specification packet
+## 2. Primary-authored specification packet
 
-**Phase 2 implemented.** Before Hand receives a mutation assignment, the Primary writes a compact specification packet through `godmode_workflow`. The controller accepts only one fresh work item, stamps the Primary author and audited gate transitions, and persists through the active SessionManager only after exact append acknowledgement. It is intentionally minimal and must contain:
+**Implemented.** Before Hand receives a mutation assignment, the Primary writes a compact specification packet through `godmode_workflow`. The controller accepts only one fresh work item, stamps the Primary author and audited gate transitions, and persists through the active SessionManager only after exact append acknowledgement. It is intentionally minimal and must contain:
 
 1. **Goal:** one sentence of the form: “An identified actor can achieve an observable outcome through an identified interface under stated constraints, evidenced by named checks.”
 2. **Numbered functional requirements:** `FR-1`, `FR-2`, …; each `functionalRequirements` entry contains the exact ID, an observable behavior description, and its applicable interface. IDs must exactly agree with `requirementIds`.
@@ -30,6 +30,19 @@ Classification is recorded once in the session ledger. If work spans classificat
 6. **Expected paths and authority constraints:** what Hand may change and what remains forbidden.
 
 The Primary authors this packet; Hand may ask questions or identify contradictions but may not silently broaden it. The packet is included in each fresh assignment rather than relying on conversation history.
+
+### Durable requirement traceability
+
+| Requirement | Shipped control and evidence |
+| --- | --- |
+| **FR-1** | Classification and Primary-authored packet; `specify` validation and packet persistence tests. |
+| **FR-2** | Canonical ledger record and derived checklist; transition/recovery tests. |
+| **FR-3** | Primary-observed red test or narrow TDD waiver before Hand; admission tests. |
+| **FR-4** | Bounded Hand assignment with immutable red-test and scope guard; integrity tests. |
+| **FR-5** | Complete Primary status/diff/material-file inspection and independent checks. |
+| **FR-6** | Fresh mandatory Scale review or bounded recorded waiver before acceptance. |
+| **FR-7** | Bounded remediation scope followed by fresh inspection and Scale re-review. |
+| **FR-8** | Interface-matched evidence matrix with explicit applicability for all eight surfaces. |
 
 ## 3. Canonical status and gates
 
@@ -46,7 +59,7 @@ pending | implemented-unverified | blocked -> waived  (reason and authority requ
 
 Hand may cause an item to be recorded as `implemented-unverified`; only the Primary can record `verified` or `waived`. Required roadmap items must be `verified` or validly `waived` before acceptance.
 
-The target workflow phases and permitted high-level transitions are:
+The shipped workflow phases and permitted high-level transitions are:
 
 ```text
 draft -> classified -> specified -> red-test-ready
@@ -71,7 +84,7 @@ Each phase or roadmap-status transition records the actor, timestamp, work-item 
 
 ## 4. Spec-driven TDD gate
 
-**Phase 2 implemented.** For every feature or bugfix, and for any other executable change where a test can express the contract, the Primary authors red tests **before Hand starts**. A red test is a focused executable assertion of the intended requirement, not a placeholder or a test of implementation details.
+**Implemented.** For every feature or bugfix, and for any other executable change where a test can express the contract, the Primary authors red tests **before Hand starts**. A red test is a focused executable assertion of the intended requirement, not a placeholder or a test of implementation details.
 
 The Primary must observe and record the intended failure before delegation. In normal runtime this is the `record-red` action of `godmode_workflow`; the controller derives the SHA-256 from the checkout and stamps the Primary actor, evidence ID, and timestamp:
 
@@ -80,7 +93,7 @@ The Primary must observe and record the intended failure before delegation. In n
 - requirement ID(s) covered; and
 - confirmation that the failure is the missing behavior, not a broken fixture, dependency, setup, or unrelated pre-existing failure.
 
-The assignment to Hand includes the red-test references and failure evidence. Setup or unrelated failure kinds are rejected rather than recorded as intended red. Phase 2 admission also verifies the referenced test still exists inside the checkout, matches the recorded SHA-256 content identity, contains a meaningful assertion, and is not skipped, todo, only, or an obvious tautology. Hand then makes the tests green by implementing the approved behavior. Hand must not weaken a red test by deleting assertions, broadening matchers, changing expected values to observed values, skipping it, marking it optional, or changing the test to follow the implementation. A test that appears incorrect or untestable is an escalation to the Primary; it is not permission to dilute the gate.
+The assignment to Hand includes the red-test references and failure evidence. Setup or unrelated failure kinds are rejected rather than recorded as intended red. Hand admission also verifies the referenced test still exists inside the checkout, matches the recorded SHA-256 content identity, contains a meaningful assertion, and is not skipped, todo, only, or an obvious tautology. Hand then makes the tests green by implementing the approved behavior. Hand must not weaken a red test by deleting assertions, broadening matchers, changing expected values to observed values, skipping it, marking it optional, or changing the test to follow the implementation. A test that appears incorrect or untestable is an escalation to the Primary; it is not permission to dilute the gate.
 
 ### Explicit TDD waivers
 
@@ -94,7 +107,7 @@ A user may explicitly waive TDD for a stated item. “Time pressure,” a Hand r
 
 ## 5. Hand gate and handoff
 
-**Phase 2 implemented.** After an admitted red result or waiver, Godmode persists `hand-running` before spawning Hand. It watches an admitted red-test file and its parent synchronously; any targeted write, rename, or removal is a sticky integrity compromise even when the original bytes are restored. Hand receives only an approved packet, expected mutation paths, red-test evidence (or the named waiver), and applicable evidence expectations. Hand:
+**Implemented.** After an admitted red result or waiver, Godmode persists `hand-running` before spawning Hand. It watches an admitted red-test file and its parent synchronously; any targeted write, rename, or removal is a sticky integrity compromise even when the original bytes are restored. Hand receives only an approved packet, expected mutation paths, red-test evidence (or the named waiver), and applicable evidence expectations. Hand:
 
 - changes only the approved (possibly deliberately narrowed) mutation scope and preserves unrelated work;
 - keeps red tests intact and makes them green; the packet may identify the immutable test without granting Hand permission to mutate it;
@@ -116,11 +129,11 @@ After Hand returns, the Primary must independently:
 6. inspect test quality, including that red tests are still meaningful and cover the intended failure; and
 7. collect interface-matched evidence described in [`EVIDENCE.md`](./EVIDENCE.md).
 
-The Primary must not treat a command string, screenshot, test claim, or Scale verdict as proof without inspecting the underlying result and relevant source. In Phase 3, `record-inspection` captures status and the complete tracked/staged/untracked diff with fixed non-shell Git arguments into bounded owner-only OS-temporary artifacts. The ledger retains only hashes, byte bounds, timestamps, expiry, and artifact paths; caller-supplied fingerprints/references are rejected. Material and out-of-scope classifications must exactly cover captured status, and the checkout/artifacts are reverified before Scale admission, review recording, and acceptance. Scale receives those artifacts plus every material and investigated out-of-scope path as read-only context.
+The Primary must not treat a command string, screenshot, test claim, or Scale verdict as proof without inspecting the underlying result and relevant source. During complete inspection, `record-inspection` captures status and the complete tracked/staged/untracked diff with fixed non-shell Git arguments into bounded owner-only OS-temporary artifacts. The ledger retains only hashes, byte bounds, timestamps, expiry, and artifact paths; caller-supplied fingerprints/references are rejected. Material and out-of-scope classifications must exactly cover captured status, and the checkout/artifacts are reverified before Scale admission, review recording, and acceptance. Scale receives those artifacts plus every material and investigated out-of-scope path as read-only context. Active inspection, evidence, and recovery references are explicitly cleaned at lifecycle boundaries; expiry makes artifacts unusable. Startup/shutdown stale-candidate detection is bounded and read-only, so crash leftovers defer to host OS temporary-file retention because pathname deletion cannot be made race-safe with this runtime.
 
 ## 7. Interface-matched evidence matrix
 
-Phase 4 adds `interface-matched-v1` as an additive packet policy for every newly Primary-authored classification. Legacy recovered records without the additive fields remain structurally compatible. Every declared requirement has exactly one applicability decision for each canonical surface: `browser-ui`, `tui`, `api`, `cli`, `library`, `persistence-migration`, `build-config`, and `documentation`. Applicable pairs require a check spec and passing Primary-observed evidence; not-applicable pairs require a bounded reason and no check/evidence pretending to cover them. Failed or blocked observations remain visible but cannot satisfy the gate.
+The shipped interface gate adds `interface-matched-v1` as an additive packet policy for every newly Primary-authored classification. Legacy recovered records without the additive fields remain structurally compatible. Every declared requirement has exactly one applicability decision for each canonical surface: `browser-ui`, `tui`, `api`, `cli`, `library`, `persistence-migration`, `build-config`, and `documentation`. Applicable pairs require a check spec and passing Primary-observed evidence; not-applicable pairs require a bounded reason and no check/evidence pretending to cover them. Failed or blocked observations remain visible but cannot satisfy the gate.
 
 `record-evidence` and its `record-evidence-matrix` alias accept bounded check specs, decisions, observed interaction text, outcomes, controlled environments, and explicit artifact input paths. They never execute invocation text or discovered commands. The bounded importer accepts only regular non-symlink checkout/approved-temp files, rejects binary/NUL and secret-like authority evidence, copies accepted files to owner-only temporary directories, and persists descriptors (hash, size, expiry), not raw artifacts. Scale admission and acceptance require a complete fresh matrix; a failed or blocked matrix can be replaced only for the same inspection, while a passing matrix is immutable. Replacement snapshots remain in the append-only ledger, superseded descriptors leave active generic evidence, and old temporary artifacts are removed only after acknowledgement. Remediation invalidates current matrix descriptors and requires fresh inspection and evidence.
 
@@ -164,6 +177,10 @@ Only the Primary can set `accepted` or communicate completion to the user. Accep
 
 Neither Hand, Scale, a passing command, a derived checklist, nor a ledger transition performed by another actor can accept the item.
 
-## 11. Current implementation checkpoint
+## 11. Shipped implementation checkpoint
 
-The current implementation is the Phase 4 workflow authoring, packet, TDD admission, Hand integrity, Primary inspection, interface-matched evidence, mandatory Scale, waiver, and bounded remediation gate plus the Phase 5/6 bounded doctor diagnosis and previewed apply/recovery. It intentionally preserves the existing runtime/security contract; doctor does not execute discovered commands, and apply writes only the two exact allowlisted targets after explicit `trusted === true` and idle proof (`isIdle === true` or `idle === true`), with missing trust/idle denied. Replacement post-write failures automatically attempt verified restoration; an unproven rollback returns an explicit partial/error result with a process-local recovery token. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.
+The shipped implementation provides the workflow authoring, packet, TDD admission, Hand integrity, Primary inspection, interface-matched evidence, mandatory Scale, waiver, bounded remediation, doctor diagnosis, and previewed apply/recovery gates. It intentionally preserves the existing runtime/security contract; doctor does not execute discovered commands, and apply writes only the two exact allowlisted targets after explicit `trusted === true`, idle proof, and `activeFaculty: null`, with missing proofs denied. Replacement post-write failures automatically attempt verified restoration; an unproven rollback returns an explicit partial/error result with a process-local recovery token. Accepted runtime records include a bounded completion capsule; raw artifacts and transcripts are never persisted. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.
+
+## 12. Controlled repository interface checks
+
+The structural interface matrix in the workflow record is distinct from concrete repository readiness checks. For this package, controlled local checks exercise the registered TUI command handler with deterministic fake UI/context (there is no standalone PTY executable), public package extension registration and consumer import, disposable SessionManager persistence and reopen, doctor/apply CLI-like command parsing and invocation, typecheck/build/configuration, and Markdown/package-link validation. Browser UI and HTTP API are explicitly **not applicable** because this repository ships neither; no browser, network, or arbitrary process execution is implied by the matrix. The remaining TUI limitation is the absence of a real PTY executable and is recorded as residual risk rather than claimed as evidence.

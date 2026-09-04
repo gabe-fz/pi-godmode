@@ -27,6 +27,7 @@ import {
   type ScaleWaiver,
   type ScaleAdmission,
   type Remediation,
+  type CompletionCapsule,
   MAX_REMEDIATION_ATTEMPTS,
 } from "./types.ts";
 
@@ -43,7 +44,7 @@ const WORKFLOW_RECORD_KEYS = new Set([
   "workItemId", "classification", "goal", "requirementIds", "functionalRequirements", "nonGoals", "expectedPaths",
   "phase", "roadmap", "history", "nextGate", "blockers", "residualRisks", "evidence", "packetAuthor",
   "acceptanceChecks", "authorityConstraints", "redTestEvidence", "tddWaiver", "unresolvedDecisions", "redTestReference",
-  "tddWaiverReference", "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "latestCapsuleReference",
+  "tddWaiverReference", "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "latestCapsuleReference", "completionCapsulePolicy", "completionCapsule",
   "primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation",
   "interfaceEvidencePolicy", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence",
 ]);
@@ -160,6 +161,8 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
     "scaleWaiverReference",
     "changedScopeSummary",
     "latestCapsuleReference",
+    "completionCapsulePolicy",
+    "completionCapsule",
     "packetAuthor",
     "acceptanceChecks",
     "authorityConstraints",
@@ -203,6 +206,17 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
           independentChecks: Array.isArray(objectValue.independentChecks) ? objectValue.independentChecks.map((entry) => isObject(entry) ? { ...entry, ...(isObject(entry.evidenceReference) ? { evidenceReference: { ...entry.evidenceReference } } : {}) } : entry) : objectValue.independentChecks,
           ...(isObject(objectValue.statusReference) ? { statusReference: { ...objectValue.statusReference } } : {}),
           ...(isObject(objectValue.completeDiffReference) ? { completeDiffReference: { ...objectValue.completeDiffReference } } : {}),
+        };
+      } else if (key === "completionCapsule" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          roadmap: Array.isArray(objectValue.roadmap) ? objectValue.roadmap.map((entry) => isObject(entry) ? { ...entry } : entry) : objectValue.roadmap,
+          requirementIds: Array.isArray(objectValue.requirementIds) ? [...objectValue.requirementIds] : objectValue.requirementIds,
+          evidence: Array.isArray(objectValue.evidence) ? objectValue.evidence.map((entry) => isObject(entry) ? { ...entry } : entry) : objectValue.evidence,
+          blockers: Array.isArray(objectValue.blockers) ? [...objectValue.blockers] : objectValue.blockers,
+          residualRisks: Array.isArray(objectValue.residualRisks) ? [...objectValue.residualRisks] : objectValue.residualRisks,
+          ...(isObject(objectValue.interfaceEvidenceSummary) ? { interfaceEvidenceSummary: { ...objectValue.interfaceEvidenceSummary } } : {}),
         };
       } else if (key === "scaleAdmission" && isObject(value)) {
         copied = { ...(value as Record<string, unknown>) };
@@ -395,11 +409,12 @@ function packetStringArray(value: unknown): value is string[] {
 
 function validArtifactReference(value: unknown): boolean {
   if (typeof value === "string") return boundedPacketString(value, 4 * 1024);
-  const allowed = new Set(["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt"]);
+  const allowed = new Set(["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt", "retentionClass"]);
   if (!isObject(value) || !hasOnlyKeys(value, allowed) || !boundedPacketString(value.id, 256)) return false;
   return Object.entries(value).every(([key, entry]) => {
     if (!allowed.has(key) || entry === undefined) return false;
     if (key === "bytes") return typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0 && entry <= 2 * 1024 * 1024;
+    if (key === "retentionClass") return entry === "session" || entry === "review" || entry === "durable";
     if (key === "sha256") return SHA256_HEX.test(typeof entry === "string" ? entry : "");
     return boundedPacketString(entry, key === "source" ? 4 * 1024 : 1024);
   });
@@ -425,6 +440,66 @@ const REMEDIATION_KEYS = new Set([
   "id", "sourceReviewId", "sourceFindingIds", "correctionScope", "attempt", "maxAttempts", "active", "createdAt",
 ]);
 const SHA256_GATE = /^[0-9a-f]{64}$/u;
+const COMPLETION_CAPSULE_KEYS = new Set([
+  "schemaVersion", "workItemId", "classification", "phase", "accepted", "roadmap", "requirementIds", "nextGate",
+  "evidence", "blockers", "residualRisks", "createdAt", "truncated", "redTestReference", "tddWaiverReference",
+  "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "interfaceEvidencePolicy", "interfaceEvidenceSummary",
+]);
+const COMPLETION_ROADMAP_KEYS = new Set(["id", "status"]);
+const COMPLETION_SUMMARY_KEYS = new Set(["checkCount", "decisionCount", "evidenceCount", "passed", "failed", "blocked"]);
+
+/** Stable reference used to bind an accepted record to its own capsule. */
+export function completionCapsuleReference(capsule: Pick<CompletionCapsule, "workItemId" | "createdAt">): string {
+  return `completion-capsule:${capsule.workItemId}:${capsule.createdAt}`;
+}
+
+function validCompletionCapsule(value: unknown, record: WorkflowRecord): value is CompletionCapsule {
+  if (!isObject(value) || !hasOnlyKeys(value, COMPLETION_CAPSULE_KEYS)
+    || value.schemaVersion !== 1
+    || value.workItemId !== record.workItemId
+    || value.classification !== record.classification
+    || value.phase !== record.phase
+    || typeof value.accepted !== "boolean"
+    || value.accepted !== (record.phase === "accepted" && record.roadmap.every((item) => item.status === "verified" || item.status === "waived"))
+    || !Array.isArray(value.roadmap) || value.roadmap.length > 64
+    || !value.roadmap.every((entry) => isObject(entry) && hasOnlyKeys(entry, COMPLETION_ROADMAP_KEYS)
+      && validBoundedGateText(entry.id, 256) && isStatus(entry.status))
+    || !Array.isArray(value.requirementIds) || value.requirementIds.length > 64
+    || !value.requirementIds.every((entry) => validBoundedGateText(entry, 64))
+    || new Set(value.requirementIds).size !== value.requirementIds.length
+    || !validBoundedGateText(value.nextGate, 8 * 1024)
+    || !Array.isArray(value.evidence) || value.evidence.length > 64 || !value.evidence.every(validGateReference)
+    || !Array.isArray(value.blockers) || value.blockers.length > 64 || !value.blockers.every((entry) => validBoundedGateText(entry, 4 * 1024))
+    || !Array.isArray(value.residualRisks) || value.residualRisks.length > 64 || !value.residualRisks.every((entry) => validBoundedGateText(entry, 4 * 1024))
+    || !canonicalUtcDate(value.createdAt) || typeof value.truncated !== "boolean") return false;
+  const roadmapById = new Map(record.roadmap.map((item) => [item.id, item.status]));
+  if (new Set(value.roadmap.map((entry) => entry.id)).size !== value.roadmap.length
+    || value.roadmap.some((entry) => roadmapById.get(entry.id) !== entry.status)) return false;
+  const requirementIds = new Set(record.requirementIds);
+  if (value.requirementIds.some((entry) => !requirementIds.has(entry))) return false;
+  const evidenceIds = new Set(record.evidence.map(referenceIdentity));
+  if (value.evidence.some((entry) => !evidenceIds.has(referenceIdentity(entry)))) return false;
+  const capsuleFieldKeys = ["redTestReference", "tddWaiverReference", "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "interfaceEvidencePolicy"] as const;
+  for (const key of capsuleFieldKeys) {
+    const expected = record[key];
+    if (value[key] !== undefined && value[key] !== expected) return false;
+  }
+  if (value.interfaceEvidenceSummary !== undefined) {
+    const summary = value.interfaceEvidenceSummary;
+    if (!isObject(summary) || !hasOnlyKeys(summary, COMPLETION_SUMMARY_KEYS)
+      || !["checkCount", "decisionCount", "evidenceCount", "passed", "failed", "blocked"].every((key) => Number.isSafeInteger(summary[key]) && (summary[key] as number) >= 0 && (summary[key] as number) <= 64)) return false;
+    const expected = {
+      checkCount: record.acceptanceCheckSpecs?.length ?? 0,
+      decisionCount: record.applicabilityDecisions?.length ?? 0,
+      evidenceCount: record.interfaceEvidence?.length ?? 0,
+      passed: record.interfaceEvidence?.filter((entry) => entry.result === "passed").length ?? 0,
+      failed: record.interfaceEvidence?.filter((entry) => entry.result === "failed").length ?? 0,
+      blocked: record.interfaceEvidence?.filter((entry) => entry.result === "blocked").length ?? 0,
+    };
+    if (Object.entries(expected).some(([key, number]) => summary[key] !== number)) return false;
+  }
+  return true;
+}
 
 function validBoundedGateText(value: unknown, maximum = 8 * 1024): value is string {
   return boundedPacketString(value, maximum);
@@ -821,6 +896,7 @@ export function validateInterfaceEvidenceMatrixDetailed(record: unknown, options
       || !interfaceText(raw.environment, 8 * 1024) || !interfaceText(raw.observedResult, 16 * 1024)
       || !Array.isArray(raw.artifactReferences) || raw.artifactReferences.length === 0 || raw.artifactReferences.length > 64
       || !raw.artifactReferences.every(interfaceReference)
+      || raw.artifactReferences.some((reference) => isObject(reference) && reference.retentionClass !== raw.retentionClass)
       || (raw.result !== "passed" && raw.result !== "failed" && raw.result !== "blocked")
       || raw.actor !== "Primary" || !canonicalUtcDate(raw.capturedAt)
       || typeof raw.adapter !== "string" || !INTERFACE_ADAPTERS.has(raw.adapter)
@@ -1050,7 +1126,7 @@ function latestRoadmapAudit(record: WorkflowRecord, itemId: string) {
 
 /** Validate a canonical record. Invalid/conflicting state is represented as a
  * blocked recovery record rather than being treated as usable state. */
-export function validateWorkflowRecord(record: unknown): WorkflowValidation {
+export function validateWorkflowRecord(record: unknown, options: { allowMissingCompletionCapsule?: boolean } = {}): WorkflowValidation {
   const invalid = (reason: string): InvalidWorkflowRecord => ({
     ok: false,
     blocked: blockedRecord(record, reason),
@@ -1096,7 +1172,9 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     || (record.scaleVerdict !== undefined && typeof record.scaleVerdict !== "string")
     || (record.scaleWaiverReference !== undefined && typeof record.scaleWaiverReference !== "string")
     || (record.changedScopeSummary !== undefined && typeof record.changedScopeSummary !== "string")
-    || (record.latestCapsuleReference !== undefined && typeof record.latestCapsuleReference !== "string")
+    || (record.latestCapsuleReference !== undefined && !validBoundedGateText(record.latestCapsuleReference, 512))
+    || (record.completionCapsulePolicy !== undefined && record.completionCapsulePolicy !== "required-v1")
+    || (record.completionCapsule !== undefined && !isObject(record.completionCapsule))
     || (record.packetAuthor !== undefined && record.packetAuthor !== "Primary")
     || (record.acceptanceChecks !== undefined && !packetStringArray(record.acceptanceChecks))
     || (record.authorityConstraints !== undefined && !packetStringArray(record.authorityConstraints))
@@ -1109,6 +1187,20 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     return invalid("Workflow record contains malformed packet, functional requirements, red-test, or waiver metadata; blocked.");
   }
   const hasPacketField = PACKET_FIELDS.some((field) => record[field] !== undefined);
+  if (record.completionCapsule !== undefined && record.completionCapsulePolicy !== "required-v1") {
+    return invalid("Completion capsule requires the additive required-v1 policy marker; blocked.");
+  }
+  if (record.completionCapsule !== undefined && !validCompletionCapsule(record.completionCapsule, record as unknown as WorkflowRecord)) {
+    return invalid("Completion capsule is malformed, unbounded, or does not match the canonical workflow record; blocked.");
+  }
+  if (record.completionCapsule !== undefined
+    && (record.latestCapsuleReference === undefined || record.latestCapsuleReference !== completionCapsuleReference(record.completionCapsule))) {
+    return invalid("Completion capsule reference is missing or does not match the canonical capsule identity; blocked.");
+  }
+  if (record.phase === "accepted" && record.completionCapsulePolicy === "required-v1" && !options.allowMissingCompletionCapsule
+    && (record.completionCapsule === undefined || record.latestCapsuleReference !== completionCapsuleReference(record.completionCapsule))) {
+    return invalid("Accepted workflow state under required-v1 requires a matching completion capsule and latest capsule reference; blocked.");
+  }
   if (hasPacketField && !(record.phase === "draft" && record.functionalRequirements === undefined) && !validPacketMetadata(record)) {
     return invalid("Workflow specification packet requires Primary author, complete functional requirements, acceptance checks, and authority constraints; blocked.");
   }
@@ -1492,7 +1584,7 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
     reason: transition.reason,
     reference: transition.reference,
   });
-  const validation = validateWorkflowRecord(next);
+  const validation = validateWorkflowRecord(next, transition.to === "accepted" ? { allowMissingCompletionCapsule: true } : {});
   if (!validation.ok) throw new Error(validation.reason);
   return validation.record;
 }

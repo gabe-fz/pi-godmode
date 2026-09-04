@@ -11,6 +11,7 @@
     "src/",
     "README.md",
     "SPEC.md",
+    "docs/",
     "LICENSE"
   ],
   "pi": {

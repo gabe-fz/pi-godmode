@@ -15,6 +15,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { BoundedEvidenceReference, PrimaryInspection } from "./types.ts";
+import { containsSecretLikeContent, isSecretLikeFilename, scavengeGodmodeTempDirectories, type TempScavengeOptions } from "./security-text.ts";
 
 /**
  * Inspection artifacts are deliberately outside the workflow ledger.  Git is
@@ -152,7 +153,11 @@ function appendUntrackedContent(cwd: string, changedPaths: readonly string[], tr
     const link = lstatSync(absolute);
     if (!link.isFile() || link.isSymbolicLink()) throw new Error(`Untracked changed path is not a safe regular file: ${path}`);
     if (link.size > INSPECTION_FILE_MAX_BYTES) throw new Error(`Untracked changed file exceeds its bounded size: ${path}`);
+    if (isSecretLikeFilename(path)) throw new Error(`Secret-like changed filename cannot become a Scale inspection artifact: ${path}`);
     const content = readFileSync(absolute);
+    if (content.includes(0) || containsSecretLikeContent(content.toString("utf8"))) {
+      throw new Error(`Secret-bearing or active untracked content cannot become a Scale inspection artifact: ${path}`);
+    }
     const marker = Buffer.from(`\n\n--- GODMODE UNTRACKED FILE: ${path} ---\n`, "utf8");
     output = Buffer.concat([output, marker, content]);
     if (output.byteLength > INSPECTION_ARTIFACT_MAX_BYTES) throw new Error("Complete checkout diff exceeds its bounded size.");
@@ -166,8 +171,14 @@ export function captureCheckoutSnapshot(cwd: string): CheckoutSnapshot {
   const status = runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], INSPECTION_STATUS_MAX_BYTES);
   const rawPaths = statusPaths(status);
   if (rawPaths.length > INSPECTION_MAX_PATHS) throw new Error("Checkout changed-file count exceeds the bounded inspection limit.");
+  if (rawPaths.some((path) => isSecretLikeFilename(path))) {
+    throw new Error("Secret-like changed filename cannot become a Scale inspection artifact; remove or quarantine the secret first.");
+  }
   const changedPaths = rawPaths.map((path) => validateCheckoutPath(root, path));
   const trackedDiff = runGit(root, ["diff", "--no-ext-diff", "--binary", "--full-index", "--no-color", "HEAD", "--"], INSPECTION_ARTIFACT_MAX_BYTES);
+  if (containsSecretLikeContent(trackedDiff.toString("utf8"))) {
+    throw new Error("Secret-bearing checkout diff cannot become a Scale inspection artifact; remove or quarantine the secret first.");
+  }
   const completeDiff = appendUntrackedContent(root, changedPaths, trackedDiff, status);
   boundedBuffer(completeDiff, INSPECTION_ARTIFACT_MAX_BYTES, "Complete checkout diff");
   const fingerprint = createHash("sha256")
@@ -301,8 +312,9 @@ export function cleanupInspectionArtifactDirectory(directory: string): void {
     if (!basename(absolute).startsWith(ARTIFACT_DIRECTORY_PREFIX) || !absolute.startsWith(resolve(tmpdir()) + sep)) return;
     rmSync(absolute, { recursive: true, force: true, maxRetries: 1 });
   } catch {
-    // Expiry cleanup is best effort; verification still fails closed when the
-    // artifact is absent or changed.
+    // Explicit lifecycle cleanup is best effort; expiry still makes the
+    // artifact unusable because verification fails closed when it is absent,
+    // changed, or expired.
   }
 }
 
@@ -318,3 +330,9 @@ export function cleanupInspectionArtifacts(inspection: PrimaryInspection): void 
 export function cleanupSupersededInspection(previous: PrimaryInspection | undefined, current: PrimaryInspection | undefined): void {
   if (previous && previous.id !== current?.id) cleanupInspectionArtifacts(previous);
 }
+
+/** Bounded startup/shutdown detection of stale inspection artifact directories; no crash-leftover deletion is attempted. */
+export function scavengeInspectionArtifactDirectories(options: TempScavengeOptions = {}): number {
+  return scavengeGodmodeTempDirectories(options);
+}
+export const scavengeInspectionArtifacts = scavengeInspectionArtifactDirectories;

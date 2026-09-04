@@ -1,6 +1,6 @@
-# State, ledgers, and memory
+# State, ledgers, and memory (FR-9)
 
-> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, Phase 2 packet/TDD records, Phase 4 interface-evidence matrix, Phase 5 read-only doctor, and Phase 6 previewed apply/recovery are implemented. Apply generates only the two exact allowlisted project files; legacy sources remain untrusted and unchanged. Apply previews, recovery handles, and temporary backups are process-local to the extension instance and are not crash-persistent. This design does not introduce a separate project ledger.
+> **Shipped behavior:** the session custom ledger, active-branch recovery, bounded projection, accepted completion capsule, packet/TDD records, interface-evidence matrix, read-only doctor, and previewed apply/recovery are implemented. Apply generates only the two exact allowlisted project files; legacy sources remain untrusted and unchanged. Apply previews, recovery handles, and temporary backups are process-local to the extension instance and are not crash-persistent. This design does not introduce a separate project ledger.
 
 Godmode separates **active session execution state** from **durable project knowledge**. The distinction protects token budgets, prevents stale checklists from becoming authority, and limits sensitive evidence retention.
 
@@ -36,11 +36,11 @@ A branch snapshot must not store full diffs, transcripts, command output, secret
 
 ### Raw evidence and artifacts
 
-Raw evidence belongs outside the workflow ledger in bounded owner-only temporary artifacts governed by [`EVIDENCE.md`](./EVIDENCE.md), not in the active prompt. The Phase 4 importer reads only explicit regular non-symlink checkout/approved-temp files, rejects secret-like authority evidence rather than silently redacting it, and persists only descriptors with provenance, hash, size, retention, and expiry. Invocation text is Primary-observed provenance and is never executed.
+Raw evidence belongs outside the workflow ledger in bounded owner-only temporary artifacts governed by [`EVIDENCE.md`](./EVIDENCE.md), not in the active prompt. The shipped importer reads only explicit regular non-symlink checkout/approved-temp files, rejects secret-like authority evidence rather than silently redacting it, and persists only descriptors with provenance, hash, size, retention, and expiry. Invocation text is Primary-observed provenance and is never executed.
 
 ### Terminal completion capsule
 
-At terminal completion, create a short capsule containing:
+At terminal completion, the accepted runtime appends one short completion capsule atomically with the accepted `WorkflowRecord`; create it from the fully gated accepted record before the single append acknowledgement. It contains:
 
 ```text
 item + classification
@@ -53,7 +53,7 @@ residual risks, blocked checks, and next action
 artifact references and timestamp
 ```
 
-The capsule is a bounded handoff/recovery object. It is not acceptance unless the Primary separately records acceptance. Retain it longer than raw details only when host policy permits and it remains redacted.
+The capsule is a bounded handoff/recovery object. An accepted capsule has matching work-item, `phase: accepted`, `accepted: true`, and `latestCapsuleReference` identity; malformed or forged capsules fail closed. Raw artifacts and transcripts are never included. Retain it longer than raw details only when host policy permits and it remains redacted.
 
 ### Curated project knowledge
 
@@ -77,6 +77,6 @@ The serialized active projection has a deterministic hard cap of 2 KiB UTF-8 and
 
 ## Status integrity
 
-The ledger's canonical workflow record is the only state authority: it contains one current phase and one current status per roadmap item. Derived checklists, UI footers, implementation plans, dashboard counts, and faculty prose may render those fields but cannot write independent state. Hand may support an `implemented-unverified` transition through its handoff; only Primary can record `verified`, `waived`, or `accepted`. Every transition records who made it, why, and the evidence/decision reference. Unknown or conflicting state fails closed to `blocked` until the Primary reconciles it.
+The ledger's canonical workflow record is the only state authority: it contains one current phase and one current status per roadmap item. Derived checklists, UI footers, plan artifacts, dashboard counts, and faculty prose may render those fields but cannot write independent state. Hand may support an `implemented-unverified` transition through its handoff; only Primary can record `verified`, `waived`, or `accepted`. Every transition records who made it, why, and the evidence/decision reference. Unknown or conflicting state fails closed to `blocked` until the Primary reconciles it.
 
-Session execution state expires with the session/retention policy unless promoted. Project knowledge persists only in reviewed docs. No state mechanism grants a faculty authority over product scope, security, release, or acceptance.
+Session execution state expires with the session/retention policy unless promoted. Project knowledge persists only in reviewed docs. No state mechanism grants a faculty authority over product scope, security, release, or acceptance. Temporary inspection, evidence, and recovery directories use own prefixes and bounded read-only startup/shutdown stale-candidate detection with expiry/age checks and no-follow symlink handling. Active artifact references are explicitly cleaned; expiry makes artifacts unusable. Crash leftovers defer to host OS temporary-file retention because automatic pathname deletion cannot be made race-safe with this runtime.

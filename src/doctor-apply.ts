@@ -4,6 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { DoctorReport } from "./types.ts";
+import { containsActiveContent, containsSecretLikeContent, redactSecretLikeContent, scavengeGodmodeTempDirectories } from "./security-text.ts";
 
 /** Phase 6 deliberately has a smaller write surface than the discovery tree. */
 export const DOCTOR_APPLY_PROFILE_PATH = ".godmode/validation-profile.json" as const;
@@ -17,9 +18,10 @@ export const DOCTOR_APPLY_MAX_BACKUP_BYTES = 1024 * 1024;
 export const DOCTOR_APPLY_MAX_HINTS = 4;
 export const DOCTOR_APPLY_MAX_HINT_BYTES = 160;
 export const DOCTOR_APPLY_MAX_SERIALIZED_BYTES = 32 * 1024;
+/** Recovery backups use the shared bounded temp policy and explicit lifecycle cleanup. */
+export const DOCTOR_RECOVERY_DIRECTORY_PREFIX = "godmode-doctor-recovery-";
 
 const MAX_TARGET_BYTES = 256 * 1024;
-const SECRET_TEXT = /(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|client[_-]?secret|password|passwd|secret|token)\s*[=:]\s*[^\s#]+)/iu;
 const CHECKBOX = /^\s*(?:[-*+]\s*)?\[([ xX])\]\s+(.+)$/u;
 const STATUS_LINE = /^\s*(?:(?:status|state|todo|task|checklist)\s*[:\-]\s+)(.+)$/iu;
 const SAFE_TOKEN = /^[0-9a-f]{64}$/u;
@@ -165,7 +167,8 @@ export interface DoctorApplyOptions {
   idle?: boolean;
   now?: () => number;
   trusted?: boolean;
-  activeFaculty?: string;
+  /** Explicit host proof that no Divine Faculty is active. Omission is not proof. */
+  activeFaculty?: string | null;
   fs?: ApplyFsOverrides;
   fileSystem?: ApplyFsOverrides;
   filesystem?: ApplyFsOverrides;
@@ -174,6 +177,11 @@ export interface DoctorApplyOptions {
   beforeWrite?: (operation: DoctorApplyOperation, index: number) => void;
   [key: string]: unknown;
 }
+
+export function scavengeDoctorRecoveryDirectories(): number {
+  return scavengeGodmodeTempDirectories();
+}
+export const scavengeDoctorRecoveryArtifacts = scavengeDoctorRecoveryDirectories;
 
 export class DoctorApplyError extends Error {
   readonly code: string;
@@ -466,22 +474,22 @@ function canonicalHint(source: string, text: string, kind: DoctorLegacyHint["kin
 }
 
 function hintFromText(source: string, value: string): DoctorLegacyHint[] {
-  // A private-key payload is rejected as a whole. Ordinary secret-looking
-  // lines are filtered individually so an adjacent safe checklist hint is
-  // still useful without copying the secret into generated files.
-  if (Buffer.byteLength(value, "utf8") > MAX_TARGET_BYTES || value.includes("\0") || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/iu.test(value) || /\uFFFD/u.test(value)) return [];
+  // Private-key and binary payloads are rejected as a whole. Ordinary
+  // credential-bearing lines are filtered below so a safe adjacent checklist
+  // hint remains useful without copying authority material.
+  if (Buffer.byteLength(value, "utf8") > MAX_TARGET_BYTES || value.includes("\0") || /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/iu.test(value) || /\uFFFD/u.test(value)) return [];
   const result: DoctorLegacyHint[] = [];
   for (const line of value.split(/\r?\n/u).slice(0, 512)) {
     const checkbox = line.match(CHECKBOX);
     if (checkbox?.[2]) {
       const text = checkbox[2].trim();
-      if (text && !SECRET_TEXT.test(text)) result.push(canonicalHint(source, text, "checkbox", checkbox[1]?.toLowerCase() === "x"));
+      if (text && !containsSecretLikeContent(text) && !containsActiveContent(text)) result.push(canonicalHint(source, text, "checkbox", checkbox[1]?.toLowerCase() === "x"));
       continue;
     }
     const status = line.match(STATUS_LINE);
     if (status?.[1]) {
       const text = status[1].trim();
-      if (text && !SECRET_TEXT.test(text)) result.push(canonicalHint(source, text, "status"));
+      if (text && !containsSecretLikeContent(text) && !containsActiveContent(text)) result.push(canonicalHint(source, text, "status"));
     }
   }
   return result;
@@ -491,7 +499,7 @@ function jsonHintValues(source: string, value: unknown, output: DoctorLegacyHint
   if (output.length >= DOCTOR_APPLY_MAX_HINTS || depth > 5) return;
   if (typeof value === "string") {
     const text = value.trim();
-    if (text && text.length <= DOCTOR_APPLY_MAX_HINT_BYTES && !SECRET_TEXT.test(text)) output.push(canonicalHint(source, text, "json"));
+    if (text && text.length <= DOCTOR_APPLY_MAX_HINT_BYTES && !containsSecretLikeContent(text) && !containsActiveContent(text)) output.push(canonicalHint(source, text, "json"));
     return;
   }
   if (Array.isArray(value)) {
@@ -500,7 +508,9 @@ function jsonHintValues(source: string, value: unknown, output: DoctorLegacyHint
   }
   if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 32)) {
-      if (/^(?:token|secret|password|credential|auth|command|script|exec|shell)/iu.test(key)) continue;
+      // Key names are untrusted input too. Skip all credential/private-key,
+      // cookie, signed-URL, and execution-bearing names before visiting values.
+      if (/(?:authorization|bearer|cookie|set[-_]?cookie|token|secret|password|passwd|passphrase|credential|private[-_ ]?key|api[-_ ]?key|access[-_ ]?(?:key|token)|refresh[-_ ]?token|id[-_ ]?token|command|script|exec|shell)/iu.test(key)) continue;
       jsonHintValues(source, item, output, depth + 1);
       if (output.length >= DOCTOR_APPLY_MAX_HINTS) return;
     }
@@ -535,6 +545,11 @@ function collectLegacyHints(root: string, fileSystem: DoctorApplyFileSystem): Do
   return [...unique.values()].sort((left, right) => `${left.source}\0${left.hash}`.localeCompare(`${right.source}\0${right.hash}`)).slice(0, DOCTOR_APPLY_MAX_HINTS);
 }
 
+function safeGeneratedText(value: unknown, maximum: number): string {
+  const text = redactSecretLikeContent(String(value));
+  return containsSecretLikeContent(text) || containsActiveContent(text) ? "[REDACTED]" : bounded(text, maximum);
+}
+
 function reportData(report: DoctorReport): Record<string, unknown> {
   const fallback = {
     projectTypes: report.projectTypes.length, surfaces: report.surfaces.length, testCandidates: report.testCandidates.length,
@@ -557,10 +572,10 @@ function reportData(report: DoctorReport): Record<string, unknown> {
   };
   return {
     summary,
-    projectTypes: report.projectTypes.slice(0, 8).map((item) => bounded(String(item.type), 96)),
-    surfaces: report.surfaces.slice(0, 8).map((item) => bounded(String(item.surface), 96)),
-    verificationNeeds: report.verificationNeeds.slice(0, 8).map((item) => ({ surface: bounded(String(item.surface), 96), method: bounded(String(item.method), 96) })),
-    commands: report.commands.slice(0, 4).map((item) => ({ command: redact(String(item.command), 160), sourcePath: redact(String(item.sourcePath), 96), requiresExplicitApproval: true })),
+    projectTypes: report.projectTypes.slice(0, 8).map((item) => safeGeneratedText(item.type, 96)),
+    surfaces: report.surfaces.slice(0, 8).map((item) => safeGeneratedText(item.surface, 96)),
+    verificationNeeds: report.verificationNeeds.slice(0, 8).map((item) => ({ surface: safeGeneratedText(item.surface, 96), method: safeGeneratedText(item.method, 96) })),
+    commands: report.commands.slice(0, 4).map((item) => ({ command: safeGeneratedText(item.command, 160), sourcePath: safeGeneratedText(item.sourcePath, 96), requiresExplicitApproval: true })),
   };
 }
 
@@ -571,6 +586,18 @@ function generateContents(report: DoctorReport, hints: DoctorLegacyHint[]): { pr
     schemaVersion: 1,
     authoritative: false,
     notice: "Discovered commands and legacy hints are non-authoritative data and require explicit approval.",
+    policy: {
+      redTests: "Required before Hand for executable feature/bugfix work; a narrow compensated TDD waiver is explicit.",
+      scale: "Mandatory before Primary acceptance; only a narrow Primary-recorded user or policy waiver applies.",
+      evidenceMethods: {
+        "browser-ui": "real-browser-flow", tui: "deterministic-pty", api: "controlled-request", cli: "executable-invocation",
+        library: "downstream-consumer", "persistence-migration": "disposable-storage", "build-config": "supported-build-config-check", documentation: "rendered-doc-validation",
+      },
+      applicability: "Record applicable or a bounded not-applicable placeholder for every requirement/surface pair.",
+      redaction: "Reject or filter credentials, bearer/cookie values, passwords, private keys, signed URLs, cloud credentials, and active content; raw artifacts/transcripts are not persisted.",
+      retention: "Use bounded session, review, or durable retention; expiry makes artifacts unusable, while explicit lifecycle cleanup handles currently held references. Crash leftovers defer to host OS temporary retention because pathname cleanup is not race-safe in this runtime.",
+      acceptance: "Primary-only acceptance; legacy hints and discovered commands remain non-authoritative and inert.",
+    },
     discovered: data,
     candidateHints: hints,
   };
@@ -592,6 +619,17 @@ function generateContents(report: DoctorReport, hints: DoctorLegacyHint[]): { pr
   const commands = data.commands as Array<{ command: string; sourcePath: string }>;
   if (commands.length === 0) lines.push("- None discovered.");
   else for (const command of commands) lines.push(`- ${command.command} _(source: ${command.sourcePath}; not executed)_`);
+  lines.push(
+    "",
+    "## Required Godmode policy",
+    "- Red tests are required before Hand for executable feature/bugfix work; only a narrow documented TDD waiver with compensation can replace them.",
+    "- Scale review is mandatory before acceptance for feature/bugfix work; only a Primary-recorded user or narrow policy waiver can replace it.",
+    "- Evidence method map: browser-ui=real-browser-flow; tui=deterministic-pty; api=controlled-request; cli=executable-invocation; library=downstream-consumer; persistence-migration=disposable-storage; build-config=supported-build-config-check; documentation=rendered-doc-validation.",
+    "- Every surface is applicable or has a bounded Primary-authored not-applicable reason; unsupported surfaces use an applicability placeholder, never a pretend check.",
+    "- Redact credentials, bearer/cookie tokens, passwords, private keys, signed URLs, cloud credentials, and active content before retention; raw artifacts/transcripts are not persisted in workflow state.",
+    "- Evidence is bounded and expires according to its retention class; active references are explicitly cleaned, while crash leftovers defer to host OS temporary retention because automatic pathname deletion is not race-safe in this runtime.",
+    "- Only the Primary can verify, accept, or communicate completion. Legacy hints and discovered commands are non-authoritative and inert until explicitly approved.",
+  );
   lines.push("");
   return { profile, guidance: lines.join("\n") };
 }
@@ -600,7 +638,7 @@ function unifiedDiff(path: string, content: string, existing: Buffer | undefined
   let oldLines: string[] = [];
   if (existing !== undefined) {
     const oldText = existing.toString("utf8");
-    oldLines = !oldText.includes("\0") && !SECRET_TEXT.test(oldText) && !/\uFFFD/u.test(oldText)
+    oldLines = !oldText.includes("\0") && !containsSecretLikeContent(oldText) && !/\uFFFD/u.test(oldText)
       ? bounded(oldText, 8 * 1024).replace(/\n$/u, "").split("\n")
       : ["[existing content redacted; target identity is token-bound]"];
   }
@@ -662,6 +700,10 @@ export class DoctorApplyManager {
   constructor(options: { now?: () => number; clock?: () => number; fs?: ApplyFsOverrides; fileSystem?: ApplyFsOverrides; filesystem?: ApplyFsOverrides } = {}) {
     this.clock = options.now ?? options.clock ?? (() => Date.now());
     this.fileSystem = makeFileSystem(options.fs ?? options.fileSystem ?? options.filesystem ?? {});
+    // Detect bounded stale candidates without mutating the host temp area;
+    // crash leftovers remain host-managed. Live map/backup cleanup above is
+    // authoritative for explicitly held references in this instance.
+    scavengeDoctorRecoveryDirectories();
   }
 
   cleanup(): void {
@@ -919,7 +961,9 @@ export class DoctorApplyManager {
 
   private assertEffectfulAllowed(options: DoctorApplyOptions): void {
     if (options.trusted !== true) throw new DoctorApplyError("trust", "Applying doctor output requires affirmative project trust.");
-    if (options.activeFaculty) throw new DoctorApplyError("active", "Applying doctor output is refused while a faculty is active.");
+    if (!Object.hasOwn(options, "activeFaculty") || options.activeFaculty !== null) {
+      throw new DoctorApplyError("active", "Applying doctor output requires explicit proof that no faculty is active (activeFaculty: null).");
+    }
     if (options.isIdle !== true && options.idle !== true) throw new DoctorApplyError("idle", "Applying doctor output requires affirmative idle proof.");
   }
 

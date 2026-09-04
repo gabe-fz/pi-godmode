@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { initializeGodmodeSession, registerGodmodeCommand, toggleGodmodeTui } from "../../src/extension-helpers.ts";
+import { createGodmodeCommandHandler, initializeGodmodeSession, registerGodmodeCommand, toggleGodmodeTui } from "../../src/extension-helpers.ts";
 import { registerWorkflowLifecycle } from "../../src/workflow-lifecycle.ts";
 import { runDoctor } from "../../src/doctor.ts";
 import type { GodmodeSnapshot } from "../../src/types.ts";
@@ -200,6 +203,72 @@ test("TUI toggle-off passes stopActive for active faculties, including degraded 
 
   assert.deepEqual(stopOptions, [{ stopActive: true }]);
   assert.equal(notifications[0], "Faculty stopped and Godmode disabled.");
+});
+
+test("effectful confirmation and recovery deny when a faculty appears during the idle wait", async () => {
+  const root = mkdtempSync(join(tmpdir(), "godmode-extension-race-"));
+  const marker = join(root, "marker.txt");
+  writeFileSync(marker, "unchanged\n");
+  try {
+    let active = false;
+    let activateAfterWait = false;
+    let applyCalls = 0;
+    let recoverCalls = 0;
+    const outputs: string[] = [];
+    const mode = {
+      get snapshot() { return snapshot("active", active); },
+      async enable() {},
+      async disable() {},
+    };
+    const context = () => ({
+      mode: "print" as const,
+      cwd: root,
+      hasUI: false,
+      ui: { notify(message: string) { outputs.push(message); } },
+      isProjectTrusted: () => true,
+      isIdle: () => true,
+      async waitForIdle() {
+        if (activateAfterWait) active = true;
+      },
+    });
+    const handler = createGodmodeCommandHandler({
+      mode,
+      output: (message) => outputs.push(message),
+      applyPreview: () => {
+        applyCalls += 1;
+        writeFileSync(marker, "apply callback was called\n");
+        throw new Error("apply callback should not run");
+      },
+      recoverPreview: () => {
+        recoverCalls += 1;
+        writeFileSync(marker, "recover callback was called\n");
+        throw new Error("recover callback should not run");
+      },
+    });
+
+    // Obtain a valid confirmation token through the read-only preview while
+    // the mode is idle; only the later effectful command is raced.
+    await handler("doctor --apply", context());
+    const preview = JSON.parse(outputs.at(-1) ?? "{}") as { token?: string };
+    assert(preview.token);
+    activateAfterWait = true;
+    await handler(`doctor --apply --confirm ${preview.token}`, context());
+    assert.equal(applyCalls, 0);
+    assert.equal(readFileSync(marker, "utf8"), "unchanged\n");
+    assert.match(outputs.at(-1) ?? "", /became active/);
+
+    // Reset the pre-wait snapshot and exercise the recovery callback through
+    // the same race. The invalid token is never reached because faculty proof
+    // is checked first, so no recovery-side target access can occur.
+    active = false;
+    activateAfterWait = true;
+    await handler(`doctor --apply --recover ${"a".repeat(64)}`, context());
+    assert.equal(recoverCalls, 0);
+    assert.equal(readFileSync(marker, "utf8"), "unchanged\n");
+    assert.match(outputs.at(-1) ?? "", /became active/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("registered godmode handler routes every Phase 5 command without mutating mode state", async () => {
