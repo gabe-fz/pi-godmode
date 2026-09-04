@@ -34,7 +34,7 @@ Completed and pushed to `main`:
 - `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
 - Independent validation at the prior checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Phase 3 Primary inspection and mandatory Scale gates, Phase 4 interface-matched evidence, and Phase 5 bounded read-only doctor are implemented in the current working tree. The normal-runtime Primary workflow controller records complete inspection evidence, binds Scale reviews to the exact latest completed run, records all-surface applicability and Primary-observed artifacts, enforces bounded waivers, and invalidates stale gate records through remediation before fresh inspection and evidence. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. Only FR-11 apply/migration remains explicitly deferred to Phase 6.
+Phase 3 Primary inspection and mandatory Scale gates, Phase 4 interface-matched evidence, Phase 5 bounded read-only doctor, and Phase 6 previewed apply/recovery are implemented in the current working tree. The normal-runtime Primary workflow controller records complete inspection evidence, binds Scale reviews to the exact latest completed run, records all-surface applicability and Primary-observed artifacts, enforces bounded waivers, and invalidates stale gate records through remediation before fresh inspection and evidence. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees.
 
 ### Phase 0 — Baseline and contract fixtures
 
@@ -89,19 +89,20 @@ Phase 3 Primary inspection and mandatory Scale gates, Phase 4 interface-matched 
 - [x] Propose an optional lightweight validation profile and focused durable guidance without requiring heavyweight docs or creating `PROJECT_MEMORY.md`; Phase 5 never creates the proposed files.
 - [x] Add parser/read-only, untrusted-project, non-execution, bound, confidence, and no-automatic-write coverage.
 - [x] Validation/evidence: disposable untrusted projects with traps, race-resistant bounded reads, report-size checks, and the current `/godmode` runtime integration suite.
-- **Exit:** FR-10, FR-11, and FR-12 diagnostic behavior is evidenced with no silent side effects. Apply/migration remains Phase 6.
+- **Exit:** FR-10, FR-11, and FR-12 diagnostic behavior is evidenced with no silent side effects.
 
 Phase 5 implementation files: `src/doctor.ts`, `src/command-parser.ts`, and the associated unit/integration contracts.
 
-### Phase 6 — Explicit apply/migration and compatibility
+### Phase 6 — Explicit apply/migration and compatibility (implemented)
 
-- [ ] Add optional `doctor --apply` (or the approved equivalent) only after a read-only report; show complete proposed diff, named paths, conflict checks, explicit confirmation, and recovery/backups for approved replacement.
-- [ ] Scaffold only approved project-local profile/guidance files; leave existing files untouched by default, abort on changed-on-disk conflicts, and report every write. No startup migration or silent overwrite.
-- [ ] Migrate legacy checklists and `PROJECT_MEMORY.md` as non-authoritative hints; curate only reviewed durable knowledge, retain existing tests/commands as candidates, and use an ephemeral ledger when no profile exists.
-- [ ] Verify current model/tool/faculty/path/trust/one-active-faculty/public-API/no-release contracts remain unchanged.
-- [ ] Primary authors red tests for preview purity, confirmation, allowlist, conflict abort, backup/recovery, legacy reconciliation, and no source/runtime regression. Observe failures before Hand.
-- [ ] Validation/evidence: apply to disposable legacy projects, deny confirmation, approve creation, reject overwrite, mutate-before-apply conflict, and run the full existing typecheck/test suite.
-- **Exit:** FR-11 and FR-12 migration/compatibility evidence is complete and user data is not silently overwritten.
+- [x] Add exact preview/replacement/confirmation/recovery grammar; show complete bounded proposed diff, named paths, target snapshots, conflict checks, explicit cryptographic token confirmation, and recovery for approved replacement.
+- [x] Scaffold only `.godmode/validation-profile.json` and `docs/GODMODE_WORKFLOW.md`; leave existing files untouched by default, abort on changed-on-disk conflicts, and report every write. No startup migration or silent overwrite.
+- [x] Reconcile exact legacy checklist/status/memory filenames as bounded non-authoritative hints without changing source files, canonical state, or acceptance; retain tests/commands as inert candidates and use an ephemeral ledger when no profile exists.
+- [x] Verify current model/tool/faculty/path/trust/one-active-faculty/public-API/no-release contracts remain unchanged.
+- [x] Add preview-purity, confirmation, allowlist, conflict abort, backup/recovery, legacy reconciliation, and no source/runtime regression coverage.
+- [x] Preserve proven applied status after cwd restoration failure, retain recovery token/backup across every unproven recovery step until TTL, make retries idempotent after a completed rename, and guard all synchronous cwd pinning with one process-global manager lock.
+- [x] Validation/evidence: apply to disposable legacy projects, deny confirmation, approve creation, reject overwrite, mutate-before-apply conflict, adversarial trust/idle/token/path/race coverage, automatic replacement rollback/recovery, post-rename and cwd-restoration retry injections, cross-manager overlap, and run the full existing typecheck/test suite.
+- **Exit:** FR-11 and FR-12 migration/compatibility behavior is implemented; independent review and final acceptance remain Primary responsibilities.
 
 ### Phase 7 — Documentation, review, and release-readiness (without release action)
 

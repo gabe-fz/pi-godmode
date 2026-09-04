@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runDoctor, type DoctorOptions } from "./doctor.ts";
+import { applyDoctorPreview, createDoctorApplyPreview, recoverDoctorPreview, type DoctorApplyManager, type DoctorApplyOptions } from "./doctor-apply.ts";
 import { parseGodmodeCommand } from "./command-parser.ts";
 import { boundedStatus } from "./status.ts";
 import type { DoctorReport } from "./types.ts";
@@ -79,12 +80,16 @@ export async function toggleGodmodeTui(mode: GodmodeToggleMode, ctx: GodmodeTuiC
 
 /**
  * The command context is deliberately the smallest host surface needed by the
- * Phase 5 command. Keeping the handler here makes its behavior testable
+ * doctor/previewed-apply command. Keeping the handler here makes its behavior testable
  * without constructing the rest of the extension runtime.
  */
 export interface GodmodeCommandContext extends GodmodeTuiCommandContext {
   mode: ExtensionCommandContext["mode"];
   cwd: string;
+  /** Trust/idle are supplied by the real host context. They stay optional at
+   * the type boundary for compatibility, but apply branches deny when absent. */
+  isProjectTrusted?(): boolean;
+  isIdle?(): boolean;
 }
 
 export interface GodmodeCommandHandlerDependencies {
@@ -95,11 +100,18 @@ export interface GodmodeCommandHandlerDependencies {
   output?: (message: string) => void;
   /** The existing TUI toggle path, replaceable only to observe delegation. */
   toggleTui?: (mode: GodmodeToggleMode, context: GodmodeTuiCommandContext) => Promise<void>;
+  /** Optional manager/seams keep command integration deterministic in hosts. */
+  doctorApplyManager?: DoctorApplyManager;
+  createApplyPreview?: (root: string, report: DoctorReport, options?: DoctorApplyOptions) => ReturnType<typeof createDoctorApplyPreview>;
+  applyPreview?: (root: string, token: string, options?: DoctorApplyOptions) => ReturnType<typeof applyDoctorPreview>;
+  recoverPreview?: (root: string, token: string, options?: DoctorApplyOptions) => ReturnType<typeof recoverDoctorPreview>;
   /** Lets the extension bind its current session context before mode calls. */
   onContext?: (context: ExtensionCommandContext) => void;
 }
 
-const GODMODE_USAGE = "Usage: /godmode | /godmode doctor | /godmode doctor --apply (read-only; apply unavailable in Phase 5)";
+// Project writes are delegated only to .godmode/validation-profile.json and
+// docs/GODMODE_WORKFLOW.md; legacy PROJECT_MEMORY.md is never written.
+const GODMODE_USAGE = "Usage: /godmode | /godmode doctor | /godmode doctor --apply | /godmode doctor --apply --replace <allowed path> | /godmode doctor --apply --confirm <token> | /godmode doctor --apply --recover <token>";
 
 /**
  * Build the single registered /godmode handler. Doctor branches do not wait
@@ -122,12 +134,80 @@ export function createGodmodeCommandHandler(
       else output(GODMODE_USAGE);
       return;
     }
-    if (command === "doctor" || command === "apply-unavailable") {
+    if (command === "doctor") {
       // The snapshot is read once for the race annotation only. No wait,
       // stop, delegate, toggle, or mode transition occurs in this branch.
       const report = doctor(context.cwd, { activeFaculty: dependencies.mode.snapshot.activeRun?.faculty });
       if (context.hasUI) context.ui.notify(report.rendered, "info");
       else output(report.rendered);
+      return;
+    }
+    if (command !== "toggle") {
+      // Apply preview is read-only, but the registered command still denies
+      // without an affirmative host trust decision. Missing trust is never an
+      // implicit allow (unlike legacy Phase 0-5 command contexts).
+      let trusted = false;
+      try { trusted = context.isProjectTrusted?.() === true; } catch { /* trust failures deny below */ }
+      const activeFaculty = dependencies.mode.snapshot.activeRun?.faculty;
+      const deny = (message: string): void => {
+        if (context.hasUI) context.ui.notify(message, "warning");
+        else output(message);
+      };
+      if (!trusted) {
+        deny("Godmode doctor apply refused: the project is not trusted; no files were changed.");
+        return;
+      }
+      if (activeFaculty) {
+        deny(`Godmode doctor apply refused while faculty ${activeFaculty} is active; no files were changed.`);
+        return;
+      }
+      try {
+        if (command !== "apply-preview" && command.action !== "apply-replacement-preview") {
+          // Re-read the host gates after waiting: a faculty or trust change
+          // during the wait must not turn into a mutation race.
+          let stillTrusted = false;
+          try { stillTrusted = context.isProjectTrusted?.() === true; } catch { /* trust failures deny below */ }
+          if (!stillTrusted) {
+            deny("Godmode doctor apply refused: project trust changed while waiting; no files were changed.");
+            return;
+          }
+          const currentActiveFaculty = dependencies.mode.snapshot.activeRun?.faculty;
+          if (currentActiveFaculty) {
+            deny(`Godmode doctor apply refused while faculty ${currentActiveFaculty} became active; no files were changed.`);
+            return;
+          }
+        }
+        const applyOptions: DoctorApplyOptions = { trusted, activeFaculty };
+        if (command === "apply-preview" || command.action === "apply-replacement-preview") {
+          const replacement = command !== "apply-preview" && command.action === "apply-replacement-preview";
+          const report = doctor(context.cwd);
+          const previewOptions = replacement ? { ...applyOptions, replacePath: command.path } : applyOptions;
+          const preview = dependencies.createApplyPreview
+            ? dependencies.createApplyPreview(context.cwd, report, previewOptions)
+            : createDoctorApplyPreview(context.cwd, report, { ...previewOptions, ...(dependencies.doctorApplyManager ? { manager: dependencies.doctorApplyManager } : {}) });
+          if (context.hasUI) context.ui.notify(preview.rendered, "info");
+          else output(preview.rendered);
+          return;
+        }
+        // At this point the only remaining non-toggle commands are the two
+        // token-bearing object states, so confirmation/recovery is explicit.
+        await context.waitForIdle();
+        // Host idle proof is mandatory for effectful confirmation/recovery;
+        // waiting alone is not proof, and a missing method is denial.
+        if (context.isIdle?.() !== true) {
+          deny("Godmode doctor apply refused while the session is not affirmatively idle; no files were changed.");
+          return;
+        }
+        const tokenCommand = command;
+        const effectfulOptions: DoctorApplyOptions = { ...applyOptions, isIdle: true };
+        const result = tokenCommand.action === "apply-confirm"
+          ? (dependencies.applyPreview ?? ((root, token, options) => applyDoctorPreview(root, token, { ...options, ...(dependencies.doctorApplyManager ? { manager: dependencies.doctorApplyManager } : {}) })))(context.cwd, tokenCommand.token, effectfulOptions)
+          : (dependencies.recoverPreview ?? ((root, token, options) => recoverDoctorPreview(root, token, { ...options, ...(dependencies.doctorApplyManager ? { manager: dependencies.doctorApplyManager } : {}) })))(context.cwd, tokenCommand.token, effectfulOptions);
+        if (context.hasUI) context.ui.notify(result.rendered, result.status === "applied" || result.status === "recovered" ? "info" : "warning");
+        else output(result.rendered);
+      } catch (error) {
+        deny(`Godmode doctor apply failed: ${error instanceof Error ? error.message : String(error)}; no files were changed.`);
+      }
       return;
     }
     if (context.mode !== "tui") {

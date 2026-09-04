@@ -900,7 +900,7 @@ function renderPayload(report: Omit<DoctorReport, "rendered">): Record<string, u
     gaps: trim(report.gaps),
     safetyFindings: trim(report.safetyFindings),
     proposals: trim(report.proposals),
-    apply: "unavailable in Phase 5",
+    apply: "available only through explicit preview and confirmation",
   };
 }
 
@@ -917,7 +917,7 @@ function minimalRenderPayload(report: Omit<DoctorReport, "rendered">): Record<st
     summary: report.summary,
     gaps: report.gaps.slice(0, 1).map((finding) => compactFinding(finding, 96)),
     safetyFindings: compactSafetyFindings(report.safetyFindings, 1),
-    apply: "unavailable in Phase 5",
+    apply: "available only through explicit preview and confirmation",
   };
 }
 
@@ -937,7 +937,7 @@ export function renderDoctorReport(report: DoctorReport): string {
     limits: { maxReportBytes: DOCTOR_MAX_REPORT_BYTES, truncated: true, truncationReasons: ["report-bytes"] },
     summary: source.summary,
     safetyFindings: compactSafetyFindings(source.safetyFindings, 1),
-    apply: "unavailable in Phase 5",
+    apply: "available only through explicit preview and confirmation",
   });
 }
 

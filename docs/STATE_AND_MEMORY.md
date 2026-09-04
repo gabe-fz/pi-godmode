@@ -1,6 +1,6 @@
 # State, ledgers, and memory
 
-> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, Phase 2 packet/TDD records, Phase 4 interface-evidence matrix, and Phase 5 read-only doctor are implemented. Durable project-knowledge curation and doctor migration remain deferred to Phase 6. This design does not introduce a separate project ledger.
+> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, Phase 2 packet/TDD records, Phase 4 interface-evidence matrix, Phase 5 read-only doctor, and Phase 6 previewed apply/recovery are implemented. Apply generates only the two exact allowlisted project files; legacy sources remain untrusted and unchanged. Apply previews, recovery handles, and temporary backups are process-local to the extension instance and are not crash-persistent. This design does not introduce a separate project ledger.
 
 Godmode separates **active session execution state** from **durable project knowledge**. The distinction protects token budgets, prevents stale checklists from becoming authority, and limits sensitive evidence retention.
 

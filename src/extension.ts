@@ -19,6 +19,7 @@ import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.t
 import { verifyInspectionArtifacts, cleanupInspectionArtifacts, cleanupSupersededInspection } from "./inspection-artifacts.ts";
 import { cleanupEvidenceArtifacts } from "./evidence.ts";
 import { runDoctor } from "./doctor.ts";
+import { DoctorApplyManager } from "./doctor-apply.ts";
 import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission, BoundedEvidenceReference } from "./types.ts";
 import type { ChecklistView } from "./workflow-state.ts";
 
@@ -46,6 +47,9 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   let currentCtx: ExtensionContext | undefined;
   const client = new SubagentsClient(pi.events);
   const modelLease = new ModelLease();
+  // Apply previews and recovery handles are process-local to this extension
+  // instance; nothing is persisted in the project or workflow ledger.
+  const doctorApplyManager = new DoctorApplyManager();
   const toolLease = new ActiveToolLease(pi);
   let verifiedGodmodeModels = new Set<string>();
   let workflowView: Readonly<ChecklistView> | undefined;
@@ -276,6 +280,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   registerGodmodeCommand(pi, {
     mode,
     runDoctor,
+    doctorApplyManager,
     onContext: (ctx) => { currentCtx = ctx; },
   });
 
@@ -315,6 +320,9 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     const inspection = inspectionForCleanup;
     const evidence = evidenceForCleanup;
+    // Apply/recovery handles are process-local to this extension instance;
+    // discard their in-memory tokens and temporary backups at session end.
+    doctorApplyManager.clear();
     await mode.shutdown();
     if (inspection) cleanupInspectionArtifacts(inspection);
     if (evidence.length > 0) cleanupEvidenceArtifacts(evidence);

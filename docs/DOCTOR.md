@@ -1,6 +1,6 @@
-# Godmode doctor (Phase 5)
+# Godmode doctor (Phase 6)
 
-> **Implementation status:** Phase 5 read-only diagnosis is implemented. Apply/migration remains unavailable until Phase 6. This document is normative for the bounded static assessment.
+> **Implementation status:** bounded read-only diagnosis and explicit previewed apply/recovery are implemented. This document is normative for the bounded static assessment and safe legacy reconciliation.
 
 ## Command shape and compatibility
 
@@ -9,12 +9,15 @@ Keep one user-facing slash command:
 ```text
 /godmode                 # in TUI: toggle; outside TUI: bounded read-only state
 /godmode doctor          # read-only readiness assessment
-/godmode doctor --apply  # explicit Phase 5 read-only/unavailable response
+/godmode doctor --apply  # preview only; returns a token and proposed diff
+/godmode doctor --apply --replace docs/GODMODE_WORKFLOW.md  # one exact replacement preview
+/godmode doctor --apply --confirm <token>  # explicit trusted/idle apply
+/godmode doctor --apply --recover <token>  # restore one approved replacement
 ```
 
 Bare `/godmode` keeps its current TUI toggle semantics: off enables, active/degraded disables, and an active faculty follows the explicit stop-and-disable cleanup path. Outside the TUI it remains non-mutating. `doctor` is always read-only by default and must not toggle Godmode, change models/tools, create files, install packages, alter configuration, launch faculties, or run project commands.
 
-`--apply` is parsed explicitly but reports **unavailable/read-only in Phase 5**. It performs no preview write, confirmation, migration, backup, replacement, or other project mutation. Phase 6 may add an explicit preview/confirmation flow; no Phase 5 path is allowed to create or alter files.
+`--apply` returns a read-only preview, cryptographic short-lived token, exact named operations, and a complete bounded proposed diff. It writes nothing. Direct preview callers may inspect untrusted projects because preview is read-only, but the registered command requires `context.isProjectTrusted?.() === true`; missing trust is denial. Only `--confirm <token>` can apply after an affirmative trusted-project proof and explicit host idle proof (`isIdle === true`); missing or false idle is denial, and an active faculty is refused. `--replace` is required for an existing target; confirmation never silently overwrites. Replacement results provide an expiring, process-local recovery token; an unproven recovery retains that same token and backup for retry until TTL. The read-only doctor render keeps `readOnly: true` and `applyAvailable: false`, and reports `apply: available only through explicit preview and confirmation`; effectful apply remains separately gated.
 
 A future implementation may expose an equivalent non-TUI invocation through the host command surface, but it must preserve the same read-only default and explicit confirmation semantics. Unknown subcommands/options fail with usage guidance; they do not fall back to toggle behavior.
 
@@ -50,7 +53,7 @@ Doctor may propose a small project-local validation profile, for example:
 
 The profile can identify project type, supported surfaces, explicit user-approved evidence commands/templates, controlled fixture/environment notes, required red-test and Scale policy, and redaction/retention expectations. Command entries are inert metadata until a user explicitly approves a run; discovery never executes them. Secrets belong in the host secret mechanism, never in this profile.
 
-Doctor may propose a focused workflow/testing document at `docs/GODMODE_WORKFLOW.md` containing the project's goal/spec packet template, interface evidence map, and ownership/waiver policy. Phase 5 never creates or patches it. It must remain lightweight and must not become a duplicate memory diary. If a suitable existing profile or document is found, doctor reports it rather than proposing a competing file.
+Doctor may propose a focused workflow/testing document at `docs/GODMODE_WORKFLOW.md` containing the project's goal/spec packet template, interface evidence map, and ownership/waiver policy. Apply may create it only after explicit confirmation. It remains lightweight and must not become a duplicate memory diary. Existing targets are conflicts unless the exact target is separately previewed with `--replace`.
 
 Scaffolding is optional. A project can use Godmode with explicit assignment checks and the normative package docs even when no profile exists. Missing profile/docs is a visible readiness gap, not a reason for doctor to write files automatically.
 
@@ -65,24 +68,25 @@ Doctor is a read-only static assessor by default, including when the project is 
 - cap file count, file size, recursion depth, report size, and artifact references to prevent denial-of-service or token flooding; and
 - report inability to inspect or verify rather than guessing.
 
-If an apply phase is later approved, it still parses discovered content as untrusted data, writes only an allowlisted proposed path, uses atomic creation/conflict checks, and asks again before each potentially destructive replacement. It never turns a discovered command into an automatically executed migration.
+When apply is approved, it still parses discovered content as untrusted data, writes only an allowlisted proposed path, uses atomic creation/conflict checks, and never turns a discovered command into an automatically executed migration. A replacement is committed atomically only after its preview binding and backup are verified. If post-commit sync or verification fails, apply automatically attempts an atomic restore and deletes the backup only after restoration verifies. If rollback or cwd restoration cannot be proven, the result is an explicit error/partial result with accurate per-operation status, a bounded process-local recovery token, and the backup retained; a target proven installed before cwd restoration failure is listed as applied and later operations are stopped. All pinned operations use one synchronous process-global cwd guard shared by DoctorApplyManager instances; this registry is not crash-persistent.
 
-## Existing-project migration (Phase 6, not available in Phase 5)
+## Existing-project apply and legacy reconciliation (Phase 6)
 
 Migration is additive and opt-in:
 
 1. Run `/godmode doctor` and review the report; no files change.
-2. Treat proposed profile/guidance paths as recommendations only; Phase 5 creates nothing.
-3. Defer any apply preview, confirmation, migration, or scaffolding request until Phase 6.
-4. When Phase 6 exists, it must confirm named operations, abort on conflicts/unexpected paths, and preserve recovery.
-5. Keep generated files small and redacted; do not replace existing workflow docs silently.
-6. Add work items gradually. For feature/bugfix items, start at classification/specification, author and observe red tests before Hand, collect interface-matched evidence, and require Scale before Primary acceptance.
-7. Retain existing tests and commands as candidates until the Primary confirms their semantics. Do not mark a command as an evidence gate solely because doctor discovered it.
-8. Record any TDD/Scale waiver narrowly with reason, approver, scope, and compensating evidence.
+2. Use `/godmode doctor --apply` to inspect a bounded preview. The preview is read-only and includes candidate legacy hints, all named operations, a digest, and a one-time token.
+3. Confirm only the displayed token. The registered command requires affirmative project trust and explicit host idle proof; all root/parent/target identities and legacy hint hashes must still match.
+4. Existing targets require a separate exact `--replace` preview. Replacement creates an owner-only OS-temp backup and returns a process-local recovery token. A post-write failure first triggers automatic verified rollback; if that cannot be proven, the same bounded token and backup are retained and exposed. Recovery consumes the token and removes the backup only after target bytes and cwd restoration are fully proven. A recovery rename that completed before sync/verification/cwd failure can be safely finalized by retry; an unrelated generated-target mismatch is refused but retains the token until TTL.
+5. Legacy `PROJECT_MEMORY.md`, `CHECKLIST.md`, `TODO.md`, `STATUS.md`, and `.godmode/checklist.json` are bounded, no-follow, untrusted hint sources. Their source files are never modified, commands remain inert, and no canonical phase/status/acceptance is imported.
+6. Keep generated files small and redacted; do not replace existing workflow docs silently.
+7. Add work items gradually. For feature/bugfix items, start at classification/specification, author and observe red tests before Hand, collect interface-matched evidence, and require Scale before Primary acceptance.
+8. Retain existing tests and commands as candidates until the Primary confirms their semantics. Do not mark a command as an evidence gate solely because doctor discovered it.
+9. Record any TDD/Scale waiver narrowly with reason, approver, scope, and compensating evidence.
 
-Legacy projects without a ledger use an ephemeral session ledger first; they do not need a heavyweight migration to begin. Legacy checklist/status files are imported as non-authoritative hints, reconciled against the canonical status model, and never treated as acceptance. Existing `PROJECT_MEMORY.md` or similar is not auto-injected; curate durable facts into focused docs only with preview and approval.
+Legacy projects without a ledger use an ephemeral session ledger first; they do not need a heavyweight migration to begin. Legacy checklist/status files are imported as non-authoritative hints, reconciled against the canonical status model, and never treated as acceptance. Existing `PROJECT_MEMORY.md` or similar is not auto-injected; curate durable facts into focused docs only with preview and approval. Apply/recovery handles and their backups are process-local to the extension instance; a restart does not provide crash-persistent recovery.
 
-The current runtime/security contract remains unchanged: same-user faculty execution, trusted-project requirement for active Godmode, constrained tools/models, one active faculty, shared-checkout mutation guard, public pi-subagents APIs, no arbitrary child execution, and no automatic commits/releases/deployments. Phase 5 diagnosis is additive and read-only; apply/migration is explicitly deferred to Phase 6.
+The current runtime/security contract remains unchanged: same-user faculty execution, trusted-project requirement for active Godmode, constrained tools/models, one active faculty, shared-checkout mutation guard, public pi-subagents APIs, no arbitrary child execution, and no automatic commits/releases/deployments. Apply writes only `.godmode/validation-profile.json` and `docs/GODMODE_WORKFLOW.md`; it never writes legacy memory/checklist/status files or executes discovered content.
 
 ## Readiness result
 

@@ -24,6 +24,7 @@ test("doctor is deterministic, classifies passive surfaces, and proposes without
     assert.deepEqual(first, second);
     assert.equal(first.readOnly, true);
     assert.equal(first.applyAvailable, false);
+    assert.match(first.rendered, /available only through explicit preview and confirmation/);
     assert(first.surfaces.some((surface) => surface.surface === "browser-ui"));
     assert(first.surfaces.some((surface) => surface.surface === "api"));
     assert(first.testCandidates.some((candidate) => candidate.path === "tests/route.test.ts"));

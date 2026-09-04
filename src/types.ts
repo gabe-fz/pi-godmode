@@ -316,6 +316,20 @@ export interface DoctorReport {
   rendered: string;
 }
 
+/** Phase 6 apply types are re-exported here for callers that keep all
+ * authority-bearing data shapes in the canonical types module. */
+export type {
+  DoctorApplyConflict,
+  DoctorApplyMode,
+  DoctorApplyOperation,
+  DoctorApplyOptions,
+  DoctorApplyPreview,
+  DoctorApplyRecoveryResult,
+  DoctorApplyResult,
+  DoctorApplyTargetSnapshot,
+  DoctorLegacyHint,
+} from "./doctor-apply.ts";
+
 /** Compatibility aliases used by evidence-focused callers. */
 export const SURFACES = INTERFACE_SURFACES;
 export const SURFACE_METHODS = INTERFACE_METHOD_BY_SURFACE;

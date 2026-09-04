@@ -237,6 +237,8 @@ test("registered godmode handler routes every Phase 5 command without mutating m
     cwd: process.cwd(),
     hasUI,
     ui: { notify(message: string, type?: "info" | "warning" | "error") { notifications.push({ message, type }); } },
+    isProjectTrusted: () => true,
+    isIdle: () => true,
     async waitForIdle() { events.push("wait"); },
   });
 
@@ -262,15 +264,13 @@ test("registered godmode handler routes every Phase 5 command without mutating m
   assert.equal(JSON.parse(outputs.at(-1) ?? "{}").readOnly, true);
   assert.equal(doctorCalls.at(-1)?.activeFaculty, "hand");
 
-  // --apply remains the same read-only, unavailable report in both hosts.
+  // Apply is denied while a faculty owns the checkout; the denial is
+  // non-mutating in both host modes and never falls through to toggle.
   await handler("doctor --apply", context("print", false));
-  const appliedOutput = outputs.at(-1) ?? "";
-  assert.equal(JSON.parse(appliedOutput).readOnly, true);
-  assert.equal(JSON.parse(appliedOutput).applyAvailable, false);
+  assert.match(outputs.at(-1) ?? "", /refused while faculty hand is active/);
   await handler("doctor --apply", context("tui", true));
-  assert.equal(notifications.at(-1)?.type, "info");
-  assert.equal(JSON.parse(notifications.at(-1)?.message ?? "{}").readOnly, true);
-  assert.equal(JSON.parse(notifications.at(-1)?.message ?? "{}").applyAvailable, false);
+  assert.equal(notifications.at(-1)?.type, "warning");
+  assert.match(notifications.at(-1)?.message ?? "", /refused while faculty hand is active/);
   assert.deepEqual(events, []);
 
   // Non-TUI bare command uses the unchanged bounded status path.
