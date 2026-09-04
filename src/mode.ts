@@ -4,10 +4,11 @@ import { basename, dirname, resolve } from "node:path";
 import type { ModelLease, ModelLeaseHost } from "./model-lease.ts";
 import { AmbiguousRpcOutcomeError, completionState, SubagentsClient } from "./subagents-client.ts";
 import { extensionCapacityMs, hardDeadlineMs, launchBackstopMs, MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
-import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, PrimaryInspection, ScaleAdmission, TerminalRunState, WorkflowPhase, WorkflowRecord } from "./types.ts";
-import { validateScaleAdmission } from "./workflow-state.ts";
+import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, PrimaryInspection, ScaleAdmission, TerminalRunState, WorkflowPhase, WorkflowRecord, BoundedEvidenceReference } from "./types.ts";
+import { validateScaleAdmission, validateInterfaceEvidenceMatrix, validateInterfaceEvidenceMatrixDetailed, requiresInterfaceEvidence } from "./workflow-state.ts";
 import { AGENT_NAMES, renderAssignment, validateDelegation, validateHandAdmission, verifyRedTestIdentity, type HandAdmissionBinding } from "./faculties.ts";
 import { inspectionArtifactContextPaths, readInspectionArtifactForContext, verifyInspectionArtifacts as verifyCapturedInspectionArtifacts } from "./inspection-artifacts.ts";
+import { verifyEvidenceArtifacts } from "./evidence.ts";
 
 export interface RedTestMonitor extends Disposable {
   /** Optional externally observable sticky state for deterministic hosts. */
@@ -218,11 +219,22 @@ export class GodmodeMode {
     let scaleAdmission: ScaleAdmission | undefined;
     if (input.faculty === "scale") {
       if (!canonicalRecord) throw new Error("Scale admission requires canonical workflow state; absent state is blocked.");
+      if (requiresInterfaceEvidence(canonicalRecord) && !validateInterfaceEvidenceMatrix(canonicalRecord)) {
+        throw new Error(`Scale admission requires a complete interface evidence matrix: ${validateInterfaceEvidenceMatrixDetailed(canonicalRecord).reason ?? "matrix incomplete"}`);
+      }
+      if (canonicalRecord.interfaceEvidencePolicy === "interface-matched-v1") {
+        const matrixReferences = (canonicalRecord.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences);
+        const matrixArtifacts = matrixReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null);
+        if (matrixArtifacts.length !== matrixReferences.length || (matrixArtifacts.length > 0 && !verifyEvidenceArtifacts(matrixArtifacts))) throw new Error("Scale admission requires fresh, present, untampered imported interface evidence artifacts.");
+      }
       const inspection = canonicalRecord.primaryInspection;
       if (!inspection) throw new Error("Scale admission requires a complete current Primary inspection.");
       const verify = this.#deps.verifyInspectionArtifacts ?? ((cwd: string, value: PrimaryInspection) => verifyCapturedInspectionArtifacts(cwd, value));
       if (!verify(this.#deps.cwd(), inspection)) throw new Error("Scale admission requires fresh, untampered inspection artifacts and an unchanged checkout.");
       const artifactPaths = inspectionArtifactContextPaths(inspection);
+      const interfaceArtifactPaths = canonicalRecord.interfaceEvidencePolicy === "interface-matched-v1"
+        ? (canonicalRecord.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null && typeof reference.source === "string").map((reference) => reference.source!))
+        : [];
       if (artifactPaths.length < 2
         || !readInspectionArtifactForContext(inspection.statusReference, "git-status")
         || !readInspectionArtifactForContext(inspection.completeDiffReference, "git-complete-diff")) {
@@ -237,7 +249,7 @@ export class GodmodeMode {
       // either trusted artifact source from the independent assignment.
       input = {
         ...input,
-        contextFiles: [...new Set([...(input.contextFiles ?? []), ...artifactPaths])],
+        contextFiles: [...new Set([...(input.contextFiles ?? []), ...artifactPaths, ...interfaceArtifactPaths])],
         expectedPaths: [...new Set([...(input.expectedPaths ?? []), ...inspectionPaths])],
       };
       const createAdmission = this.#deps.createScaleAdmission ?? createDefaultScaleAdmission;

@@ -1,0 +1,4 @@
+surface=cli
+argv=--version
+exit=0
+result=passed

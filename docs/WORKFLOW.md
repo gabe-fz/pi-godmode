@@ -1,6 +1,6 @@
 # Godmode target workflow
 
-> **Implementation status:** Phase 3 (FR-1, FR-3, FR-4, FR-5, FR-6, and FR-7) is implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence, binds Scale reviews to the exact latest completed run, enforces bounded waivers, and invalidates stale gate evidence through capped remediation. Phase 4 interface-matched evidence automation and doctor remain future behavior. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
+> **Implementation status:** Phases 2–4 are implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence and an all-surface interface-evidence matrix, binds Scale reviews to the exact latest completed run, enforces bounded waivers, and invalidates stale gate evidence through capped remediation before fresh inspection and evidence. Doctor remains future behavior. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
 
 ## 1. Authority and unit of work
 
@@ -118,7 +118,13 @@ After Hand returns, the Primary must independently:
 
 The Primary must not treat a command string, screenshot, test claim, or Scale verdict as proof without inspecting the underlying result and relevant source. In Phase 3, `record-inspection` captures status and the complete tracked/staged/untracked diff with fixed non-shell Git arguments into bounded owner-only OS-temporary artifacts. The ledger retains only hashes, byte bounds, timestamps, expiry, and artifact paths; caller-supplied fingerprints/references are rejected. Material and out-of-scope classifications must exactly cover captured status, and the checkout/artifacts are reverified before Scale admission, review recording, and acceptance. Scale receives those artifacts plus every material and investigated out-of-scope path as read-only context.
 
-## 7. Mandatory Scale review
+## 7. Interface-matched evidence matrix
+
+Phase 4 adds `interface-matched-v1` as an additive packet policy for every newly Primary-authored classification. Legacy recovered records without the additive fields remain structurally compatible. Every declared requirement has exactly one applicability decision for each canonical surface: `browser-ui`, `tui`, `api`, `cli`, `library`, `persistence-migration`, `build-config`, and `documentation`. Applicable pairs require a check spec and passing Primary-observed evidence; not-applicable pairs require a bounded reason and no check/evidence pretending to cover them. Failed or blocked observations remain visible but cannot satisfy the gate.
+
+`record-evidence` and its `record-evidence-matrix` alias accept bounded check specs, decisions, observed interaction text, outcomes, controlled environments, and explicit artifact input paths. They never execute invocation text or discovered commands. The bounded importer accepts only regular non-symlink checkout/approved-temp files, rejects binary/NUL and secret-like authority evidence, copies accepted files to owner-only temporary directories, and persists descriptors (hash, size, expiry), not raw artifacts. Scale admission and acceptance require a complete fresh matrix; a failed or blocked matrix can be replaced only for the same inspection, while a passing matrix is immutable. Replacement snapshots remain in the append-only ledger, superseded descriptors leave active generic evidence, and old temporary artifacts are removed only after acknowledgement. Remediation invalidates current matrix descriptors and requires fresh inspection and evidence.
+
+## 8. Mandatory Scale review
 
 For every **feature** and **bugfix**, a fresh-context **Scale review is mandatory before acceptance**. “When useful” is not sufficient. Scale reviews the actual diff, source, specification packet, red-test evidence, and independent validation evidence; it does not review only Hand's summary and it cannot accept work.
 
@@ -137,13 +143,13 @@ A Scale waiver is permitted only when:
 
 The waiver is recorded before acceptance and never means that the Primary may skip full-diff inspection or validation. A lack of Scale capacity is a blocked state, not an unrecorded waiver. User waiver provenance is an exact active-branch message `WAIVE SCALE: <work-item-id>`; caller-supplied approval references have no authority. Policy waiver provenance is an existing bounded, checkout-confined, non-symlink JSON file naming the exact item, scope, reason, risk limit, owner, compensation, and canonical expiry/review timestamps; the controller reads and hashes it and never creates policy.
 
-## 8. Remediation and re-review
+## 9. Remediation and re-review
 
 A blocker or fix-now finding returns the item to `remediation`. The `record-scale-review` action requires the Primary to supply a nonempty `correctionScope` (or `remediationPaths`) of normalized checkout-relative paths, and the controller persists it only when it is a subset of packet `expectedPaths`; finding summaries are evidence, never mutation paths. Hand's correction assignment must be a nonempty subset of that scope, preserving the original requirements and red tests. One correction assignment is active at a time; uncontrolled loops are forbidden. Hand reports the new diff and verification, and the Primary repeats full-diff/material-file inspection for the changed area and any affected interface.
 
 The item then returns to `scale-running` for a fresh Scale re-review of the remediation and its interaction with the original work. Scale must confirm disposition of every blocking finding. New blockers restart the same cycle. Optional findings are recorded as residual risk or roadmap work; they do not silently expand the assignment.
 
-## 9. Acceptance
+## 10. Acceptance
 
 Only the Primary can set `accepted` or communicate completion to the user. Acceptance requires, as applicable:
 
@@ -158,6 +164,6 @@ Only the Primary can set `accepted` or communicate completion to the user. Accep
 
 Neither Hand, Scale, a passing command, a derived checklist, nor a ledger transition performed by another actor can accept the item.
 
-## 10. Current implementation checkpoint
+## 11. Current implementation checkpoint
 
-The current implementation is the Phase 3 workflow authoring, packet, TDD admission, Hand integrity, Primary inspection, mandatory Scale, waiver, and bounded remediation gate. It intentionally preserves the existing runtime/security contract and does not claim Phase 4 interface-evidence automation or doctor behavior. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.
+The current implementation is the Phase 4 workflow authoring, packet, TDD admission, Hand integrity, Primary inspection, interface-matched evidence, mandatory Scale, waiver, and bounded remediation gate. It intentionally preserves the existing runtime/security contract and does not claim doctor behavior. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.

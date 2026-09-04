@@ -151,6 +151,90 @@ export type RoadmapStatus = (typeof ROADMAP_STATUSES)[number];
 export const WORKFLOW_ACTORS = ["Primary", "Eye", "Hand", "Scale"] as const;
 export type WorkflowActor = (typeof WORKFLOW_ACTORS)[number];
 
+/** The only supported interface surfaces for Phase 4 evidence. */
+export const INTERFACE_SURFACES = [
+  "browser-ui",
+  "tui",
+  "api",
+  "cli",
+  "library",
+  "persistence-migration",
+  "build-config",
+  "documentation",
+] as const;
+export type InterfaceSurface = (typeof INTERFACE_SURFACES)[number];
+
+/** The canonical, non-substitutable verification method for each surface. */
+export const INTERFACE_METHOD_BY_SURFACE = {
+  "browser-ui": "real-browser-flow",
+  tui: "deterministic-pty",
+  api: "controlled-request",
+  cli: "executable-invocation",
+  library: "downstream-consumer",
+  "persistence-migration": "disposable-storage",
+  "build-config": "supported-build-config-check",
+  documentation: "rendered-doc-validation",
+} as const satisfies Record<InterfaceSurface, string>;
+export type InterfaceEvidenceMethod = (typeof INTERFACE_METHOD_BY_SURFACE)[InterfaceSurface];
+/** Compatibility aliases used by evidence-focused callers. */
+export const SURFACES = INTERFACE_SURFACES;
+export const SURFACE_METHODS = INTERFACE_METHOD_BY_SURFACE;
+export type EvidenceSurface = InterfaceSurface;
+export type EvidenceApplicability = "applicable" | "not-applicable";
+export type InterfaceEvidenceResult = "passed" | "failed" | "blocked";
+
+/** Primary-authored description of one interface-matched check. */
+export interface AcceptanceCheckSpec {
+  id: string;
+  surface: InterfaceSurface;
+  /** Runtime validation enforces the canonical value for the surface. */
+  method: string;
+  requirementIds: string[];
+  /** Primary-observed interaction/invocation description; never executable input. */
+  interaction: string;
+  scenario?: string;
+  expectedOutcome?: string;
+}
+
+/** One decision for a requirement/surface pair. */
+export interface EvidenceApplicabilityDecision {
+  surface: InterfaceSurface;
+  requirementIds: string[];
+  applicability: EvidenceApplicability;
+  /** Required for both branches and intentionally bounded. */
+  reason: string;
+  actor: "Primary";
+  decidedAt: string;
+  inspectionId: string;
+  diffFingerprint: string;
+}
+
+/** Bounded evidence observed by Primary for one declared interface check. */
+export interface InterfaceEvidenceRecord {
+  id: string;
+  workItemId: string;
+  requirementIds: string[];
+  surface: InterfaceSurface;
+  /** Runtime validation enforces the canonical value for the surface/check. */
+  method: string;
+  acceptanceCheckId: string;
+  scenario: string;
+  invocation: string;
+  environment: string;
+  observedResult: string;
+  artifactReferences: Array<string | BoundedEvidenceReference>;
+  result: InterfaceEvidenceResult;
+  actor: "Primary";
+  capturedAt: string;
+  adapter: "primary-observed-artifact" | string;
+  adapterVersion: "1";
+  redactionStatus: "verified-clean";
+  retentionClass: "session" | "review" | "durable";
+  expiresAt: string;
+  inspectionId: string;
+  diffFingerprint: string;
+}
+
 /** A bounded pointer to evidence; raw evidence is intentionally not part of
  * the canonical record. */
 export interface BoundedEvidenceReference {
@@ -387,6 +471,11 @@ export interface WorkflowRecord {
   latestCapsuleReference?: string;
   /** Current bounded Phase 3 gate records. Raw diffs/transcripts are never retained. */
   primaryInspection?: PrimaryInspection;
+  /** Additive Phase 4 policy and current interface-matched evidence matrix. */
+  interfaceEvidencePolicy?: "interface-matched-v1";
+  acceptanceCheckSpecs?: AcceptanceCheckSpec[];
+  applicabilityDecisions?: EvidenceApplicabilityDecision[];
+  interfaceEvidence?: InterfaceEvidenceRecord[];
   /** Current Scale admission; absent after review/waiver or failed lifecycle. */
   scaleAdmission?: ScaleAdmission;
   scaleReview?: ScaleReview;
@@ -466,4 +555,13 @@ export interface CompletionCapsule {
   scaleVerdict?: string;
   scaleWaiverReference?: string;
   changedScopeSummary?: string;
+  interfaceEvidencePolicy?: "interface-matched-v1";
+  interfaceEvidenceSummary?: {
+    checkCount: number;
+    decisionCount: number;
+    evidenceCount: number;
+    passed: number;
+    failed: number;
+    blocked: number;
+  };
 }

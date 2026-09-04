@@ -1,0 +1,3 @@
+surface=browser-ui
+scenario=controlled local route renders the expected state
+result=passed

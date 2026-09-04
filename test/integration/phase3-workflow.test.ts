@@ -102,6 +102,7 @@ function runtimeController() {
   const root = mkdtempSync(join(tmpdir(), "godmode-phase3-runtime-"));
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "feature.ts"), "export const feature = true;\\n");
+  writeFileSync(join(root, "phase4-evidence.txt"), "documentation evidence passed\\n");
   const manager = SessionManager.create(root, join(root, "sessions"));
   let record: WorkflowRecord | undefined;
   let latestScaleRun: { runId: string; admissionId?: string; faculty: "scale"; state: "complete" | "failed" } | undefined;
@@ -183,6 +184,22 @@ function specifyDocumentation(instance: ReturnType<typeof createPrimaryWorkflowC
 
 function advance(record: WorkflowRecord, phases: readonly WorkflowRecord["phase"][]): WorkflowRecord {
   return phases.reduce((current, to) => applyPhaseTransition(current, { ...audit, to }), record);
+}
+
+/** Phase 3 controller fixtures now exercise the compact complete Phase 4
+ * matrix after every fresh inspection without executing any interface. */
+function recordCompactMatrix(runtime: ReturnType<typeof runtimeController>): void {
+  const surfaces = ["browser-ui", "tui", "api", "cli", "library", "persistence-migration", "build-config", "documentation"] as const;
+  const methods = {
+    "browser-ui": "real-browser-flow", tui: "deterministic-pty", api: "controlled-request", cli: "executable-invocation",
+    library: "downstream-consumer", "persistence-migration": "disposable-storage", "build-config": "supported-build-config-check", documentation: "rendered-doc-validation",
+  } as const;
+  runtime.instance.execute({
+    action: "record-evidence-matrix",
+    acceptanceCheckSpecs: [{ id: "check-documentation", surface: "documentation", method: methods.documentation, requirementIds: ["FR-1"], interaction: "Validate the rendered documentation contract." }],
+    applicabilityDecisions: surfaces.map((surface) => ({ surface, requirementIds: ["FR-1"], applicability: surface === "documentation" ? "applicable" : "not-applicable", reason: surface === "documentation" ? "The documentation surface is the changed contract." : `The ${surface} surface is not changed by this documentation item.` })),
+    interfaceEvidence: [{ acceptanceCheckId: "check-documentation", surface: "documentation", method: methods.documentation, requirementIds: ["FR-1"], scenario: "Render the documented page.", invocation: "supported markdown renderer", environment: "Disposable local documentation fixture.", observedResult: "The rendered documentation contract passed.", result: "passed", artifactInputPaths: ["phase4-evidence.txt"] }],
+  });
 }
 
 test("Scale admission persists before spawn, includes every inspected path, and never auto-accepts", async () => {
@@ -297,6 +314,7 @@ test("normal controller enforces exact inspection checks, bounded remediation, a
     ],
   });
   assert.equal(inspected.phase, "evidence-ready");
+  recordCompactMatrix(runtime);
   record = runtime.getRecord()!;
   record = applyPhaseTransition(record, { ...audit, to: "scale-running" });
   runtime.setRecord(record);
@@ -343,12 +361,13 @@ test("normal controller enforces exact inspection checks, bounded remediation, a
     ],
   });
   assert.equal(fresh.phase, "evidence-ready");
+  recordCompactMatrix(runtime);
   record = applyPhaseTransition(runtime.getRecord()!, { ...audit, to: "scale-running" });
   runtime.setRecord(record);
   runtime.setLatestScaleRun("scale-phase3-2");
   const passed = runtime.instance.execute({
     action: "record-scale-review",
-    evidenceReferences: ["artifact:status-fresh", "artifact:diff-fresh", "artifact:test-fresh", "artifact:typecheck-fresh"],
+    evidenceReferences: ["artifact:status-fresh", "artifact:diff-fresh", "artifact:test-fresh", "artifact:typecheck-fresh", ...runtime.getRecord()!.interfaceEvidence!.flatMap((evidence) => evidence.artifactReferences)],
     verdict: "pass", findings: [], residualUncertainty: "No residual uncertainty beyond the recorded packet risks.",
   });
   assert.equal(passed.phase, "review-passed");
@@ -370,6 +389,7 @@ function prepareScale(runtime: ReturnType<typeof runtimeController>): void {
     ],
     residualRisks: [],
   });
+  recordCompactMatrix(runtime);
 }
 
 test("normal controller accepts only valid user-explicit or policy Scale waivers", () => {
@@ -428,6 +448,7 @@ test("normal controller enforces the three-attempt remediation cap", () => {
       inspection.statusReference,
       inspection.completeDiffReference,
       ...inspection.independentChecks.map((check) => check.evidenceReference),
+      ...runtime.getRecord()!.interfaceEvidence!.flatMap((evidence) => evidence.artifactReferences),
     ],
     verdict: "pass", findings: [], residualUncertainty: "The third correction resolved every blocking finding.",
   }).phase, "review-passed", "the remediation cap must not reject a passing final review");

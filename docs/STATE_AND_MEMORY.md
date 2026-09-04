@@ -1,6 +1,6 @@
 # State, ledgers, and memory
 
-> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, and Phase 2 packet/TDD records are implemented. Durable project-knowledge curation, later acceptance/evidence fields, and doctor migration remain target behavior. This design does not introduce a separate project ledger.
+> **Implementation status:** the session custom ledger, active-branch recovery, bounded projection, completion capsule, Phase 2 packet/TDD records, and Phase 4 interface-evidence matrix are implemented. Durable project-knowledge curation and doctor migration remain target behavior. This design does not introduce a separate project ledger.
 
 Godmode separates **active session execution state** from **durable project knowledge**. The distinction protects token budgets, prevents stale checklists from becoming authority, and limits sensitive evidence retention.
 
@@ -15,7 +15,7 @@ The session custom ledger is the authoritative source for the currently active w
 - active faculty/run ID and lifecycle/deadline metadata when present;
 - red-test result or explicit waiver reference;
 - latest Hand handoff capsule;
-- latest Primary inspection/evidence summary;
+- latest Primary inspection and interface-matched evidence-matrix summary;
 - Scale verdict, finding dispositions, and waiver reference if any;
 - unresolved decisions, blockers, residual risks, and next gate; and
 - bounded artifact references and timestamps.
@@ -36,7 +36,7 @@ A branch snapshot must not store full diffs, transcripts, command output, secret
 
 ### Raw evidence and artifacts
 
-Raw evidence belongs in bounded details or external artifact references governed by [`EVIDENCE.md`](./EVIDENCE.md), not in the active prompt. Store only enough excerpt to identify the result and point to the artifact. Apply redaction before storing. Artifact references must carry provenance, access/retention classification, and expiry where supported.
+Raw evidence belongs outside the workflow ledger in bounded owner-only temporary artifacts governed by [`EVIDENCE.md`](./EVIDENCE.md), not in the active prompt. The Phase 4 importer reads only explicit regular non-symlink checkout/approved-temp files, rejects secret-like authority evidence rather than silently redacting it, and persists only descriptors with provenance, hash, size, retention, and expiry. Invocation text is Primary-observed provenance and is never executed.
 
 ### Terminal completion capsule
 

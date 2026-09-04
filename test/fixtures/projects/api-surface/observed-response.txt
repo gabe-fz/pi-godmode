@@ -1,0 +1,5 @@
+surface=api
+method=GET
+path=/health
+status=200
+result=passed

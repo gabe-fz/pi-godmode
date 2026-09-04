@@ -19,9 +19,13 @@ import {
   validateScaleWaiver,
   validateTddWaiver,
   validateWorkflowRecord,
+  validateInterfaceEvidenceMatrix,
+  validateInterfaceEvidenceMatrixDetailed,
+  requiresInterfaceEvidence,
 } from "./workflow-state.ts";
 import { normalizeCheckoutPath, verifyRedTestIdentity } from "./faculties.ts";
-import { MAX_REMEDIATION_ATTEMPTS } from "./types.ts";
+import { MAX_REMEDIATION_ATTEMPTS, INTERFACE_SURFACES, INTERFACE_METHOD_BY_SURFACE, type AcceptanceCheckSpec, type EvidenceApplicabilityDecision, type InterfaceEvidenceRecord, type InterfaceSurface, type InterfaceEvidenceMethod } from "./types.ts";
+import { importEvidenceArtifacts, verifyEvidenceArtifacts, cleanupEvidenceArtifacts, EVIDENCE_ARTIFACT_TTL_MS, type EvidenceArtifactDescriptor } from "./evidence.ts";
 import type {
   FunctionalRequirement,
   BoundedEvidenceReference,
@@ -150,6 +154,43 @@ const ScaleFindingSchema = Type.Object({
   summary: Type.String({ minLength: 1, maxLength: 8192 }),
 }, { additionalProperties: false });
 const CorrectionScopeSchema = Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 });
+const InterfaceSurfaceSchema = StringEnum(INTERFACE_SURFACES);
+const InterfaceMethodSchema = StringEnum(Object.values(INTERFACE_METHOD_BY_SURFACE) as unknown as readonly [string, ...string[]]);
+const InterfaceRequirementIdsSchema = Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { minItems: 1, maxItems: 64 });
+const AcceptanceCheckSpecSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 256 }),
+  surface: InterfaceSurfaceSchema,
+  method: InterfaceMethodSchema,
+  requirementIds: InterfaceRequirementIdsSchema,
+  interaction: Type.String({ minLength: 1, maxLength: 8192 }),
+  scenario: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  expectedOutcome: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+}, { additionalProperties: false });
+const ApplicabilityDecisionInputSchema = Type.Object({
+  surface: InterfaceSurfaceSchema,
+  requirementIds: InterfaceRequirementIdsSchema,
+  applicability: StringEnum(["applicable", "not-applicable"] as const),
+  reason: Type.String({ minLength: 1, maxLength: 4096 }),
+}, { additionalProperties: false });
+const EvidenceInputSchema = Type.Object({
+  acceptanceCheckId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+  checkId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+  checkSpecId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+  surface: InterfaceSurfaceSchema,
+  method: InterfaceMethodSchema,
+  requirementIds: InterfaceRequirementIdsSchema,
+  scenario: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  invocation: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  interaction: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  environment: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  controlledEnvironment: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  observedResult: Type.Optional(Type.String({ minLength: 1, maxLength: 16384 })),
+  observedOutcome: Type.Optional(Type.String({ minLength: 1, maxLength: 16384 })),
+  result: StringEnum(["passed", "failed", "blocked"] as const),
+  artifactInputPaths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 })),
+  artifactPaths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 })),
+}, { additionalProperties: false });
+const InterfaceEvidenceRecordsSchema = Type.Array(EvidenceInputSchema, { maxItems: 64 });
 const ScaleReviewSchema = Type.Object({
   evidenceReferences: Type.Array(ArtifactReferenceSchema, { minItems: 1, maxItems: 64 }),
   verdict: StringEnum(["pass", "changes-required"] as const),
@@ -172,7 +213,7 @@ const ScaleWaiverInputSchema = Type.Object({
 }, { additionalProperties: false });
 
 export const WorkflowSchema = Type.Object({
-  action: StringEnum(["specify", "record-red", "waive-tdd", "record-inspection", "record-scale-review", "waive-scale", "accept"] as const),
+  action: StringEnum(["specify", "record-red", "waive-tdd", "record-inspection", "record-evidence", "record-evidence-matrix", "record-scale-review", "waive-scale", "accept"] as const),
   // Packet-authoring fields. The controller supplies all authority-bearing
   // metadata (author, phase, history, timestamps, and status).
   workItemId: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
@@ -217,6 +258,16 @@ export const WorkflowSchema = Type.Object({
   residualRisks: StringList,
   settleRoadmapItemIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 64 })),
   roadmapItemIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 64 })),
+  // Phase 4 evidence matrix input. Authority metadata and artifact references
+  // are always stamped by the trusted controller and are absent here.
+  acceptanceCheckSpecs: Type.Optional(Type.Array(AcceptanceCheckSpecSchema, { maxItems: 64 })),
+  applicabilityDecisions: Type.Optional(Type.Array(ApplicabilityDecisionInputSchema, { minItems: 1, maxItems: 512 })),
+  interfaceEvidence: Type.Optional(InterfaceEvidenceRecordsSchema),
+  evidenceRecords: Type.Optional(InterfaceEvidenceRecordsSchema),
+  records: Type.Optional(InterfaceEvidenceRecordsSchema),
+  observations: Type.Optional(InterfaceEvidenceRecordsSchema),
+  checks: Type.Optional(Type.Array(AcceptanceCheckSpecSchema, { maxItems: 64 })),
+  decisions: Type.Optional(Type.Array(ApplicabilityDecisionInputSchema, { minItems: 1, maxItems: 512 })),
   // Scale review fields intentionally omit runId/reviewer/freshContext.
   scaleReview: Type.Optional(ScaleReviewSchema),
   evidenceReferences: Type.Optional(Type.Array(ArtifactReferenceSchema, { minItems: 1, maxItems: 64 })),
@@ -253,7 +304,8 @@ const WORKFLOW_ACTOR_FIELDS = new Set([
   "packetAuthor", "redTestEvidence", "tddWaiver", "redTestReference", "tddWaiverReference",
   "runId", "reviewer", "freshContext", "admissionId", "diffFingerprint", "sha256", "hash",
   "policyReference", "userMessageEntryId", "statusReference", "completeDiffReference", "source",
-  "nextGate", "blockers", "status", "to",
+  "nextGate", "blockers", "status", "to", "inspectionId", "adapter", "adapterVersion", "redactionStatus",
+  "retentionClass", "expiresAt", "capturedAt", "decidedAt", "artifactReferences", "result",
 ]);
 
 function workflowObject(value: unknown): value is Record<string, unknown> {
@@ -482,6 +534,115 @@ function findScaleWaiverMessage(manager: LedgerSessionManager, workItemId: strin
   return matching;
 }
 
+const MATRIX_CHECK_INPUT_KEYS = new Set(["id", "surface", "method", "requirementIds", "interaction", "scenario", "expectedOutcome"]);
+const MATRIX_DECISION_INPUT_KEYS = new Set(["surface", "requirementIds", "applicability", "reason"]);
+const MATRIX_EVIDENCE_INPUT_KEYS = new Set([
+  "acceptanceCheckId", "checkId", "checkSpecId", "surface", "method", "requirementIds", "scenario", "interaction", "invocation", "environment", "controlledEnvironment", "observedResult", "observedOutcome",
+  "result", "artifactInputPaths", "artifactPaths",
+]);
+
+function matrixSurface(value: unknown): value is InterfaceSurface {
+  return typeof value === "string" && (INTERFACE_SURFACES as readonly string[]).includes(value);
+}
+
+function matrixMethod(value: unknown): value is InterfaceEvidenceMethod {
+  return typeof value === "string" && (Object.values(INTERFACE_METHOD_BY_SURFACE) as readonly string[]).includes(value);
+}
+
+function matrixInputList(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 512) throw new Error(`${field} must be a bounded nonempty array.`);
+  return value;
+}
+
+function matrixInputIds(value: unknown, requirements: readonly string[], field: string): string[] {
+  const ids = workflowStringArray(value, field);
+  if (!ids.every((id) => requirements.includes(id))) throw new Error(`${field} must contain only declared requirement IDs.`);
+  return ids;
+}
+
+function matrixInputObject(raw: unknown, allowed: ReadonlySet<string>, field: string): Record<string, unknown> {
+  if (!workflowObject(raw) || Object.keys(raw).some((key) => !allowed.has(key))) throw new Error(`${field} contains authority or unsupported fields.`);
+  return raw;
+}
+
+function matrixCheckSpecs(value: unknown, requirements: readonly string[]): AcceptanceCheckSpec[] {
+  if (!Array.isArray(value) || value.length > 64) throw new Error("acceptanceCheckSpecs must be a bounded array.");
+  const entries = value;
+  const ids = new Set<string>();
+  return entries.map((raw, index) => {
+    const item = matrixInputObject(raw, MATRIX_CHECK_INPUT_KEYS, `acceptanceCheckSpecs[${index}]`);
+    const id = workflowText(item.id, `acceptanceCheckSpecs[${index}].id`, 256);
+    if (ids.has(id)) throw new Error("Acceptance check spec IDs must be unique.");
+    ids.add(id);
+    const surface = item.surface;
+    if (!matrixSurface(surface)) throw new Error(`acceptanceCheckSpecs[${index}].surface is invalid.`);
+    if (!matrixMethod(item.method) || item.method !== INTERFACE_METHOD_BY_SURFACE[surface]) throw new Error(`acceptanceCheckSpecs[${index}].method must be the canonical method for its surface.`);
+    const requirementIds = matrixInputIds(item.requirementIds, requirements, `acceptanceCheckSpecs[${index}].requirementIds`);
+    const interaction = workflowText(item.interaction, `acceptanceCheckSpecs[${index}].interaction`, 8 * 1024);
+    const scenario = item.scenario === undefined ? undefined : workflowText(item.scenario, `acceptanceCheckSpecs[${index}].scenario`, 8 * 1024);
+    const expectedOutcome = item.expectedOutcome === undefined ? undefined : workflowText(item.expectedOutcome, `acceptanceCheckSpecs[${index}].expectedOutcome`, 8 * 1024);
+    return { id, surface, method: item.method, requirementIds, interaction, ...(scenario !== undefined ? { scenario } : {}), ...(expectedOutcome !== undefined ? { expectedOutcome } : {}) };
+  });
+}
+
+function matrixDecisions(value: unknown, requirements: readonly string[], inspectionId: string, diffFingerprint: string, timestamp: string): EvidenceApplicabilityDecision[] {
+  const entries = matrixInputList(value, "applicabilityDecisions");
+  return entries.map((raw, index) => {
+    const item = matrixInputObject(raw, MATRIX_DECISION_INPUT_KEYS, `applicabilityDecisions[${index}]`);
+    if (!matrixSurface(item.surface)) throw new Error(`applicabilityDecisions[${index}].surface is invalid.`);
+    if (item.applicability !== "applicable" && item.applicability !== "not-applicable") throw new Error(`applicabilityDecisions[${index}].applicability is invalid.`);
+    return {
+      surface: item.surface,
+      requirementIds: matrixInputIds(item.requirementIds, requirements, `applicabilityDecisions[${index}].requirementIds`),
+      applicability: item.applicability,
+      reason: workflowText(item.reason, `applicabilityDecisions[${index}].reason`, 4 * 1024),
+      actor: "Primary" as const,
+      decidedAt: timestamp,
+      inspectionId,
+      diffFingerprint,
+    };
+  });
+}
+
+interface MatrixEvidenceInput {
+  acceptanceCheckId: string;
+  surface: InterfaceSurface;
+  method: InterfaceEvidenceMethod;
+  requirementIds: string[];
+  scenario: string;
+  invocation: string;
+  environment: string;
+  observedResult: string;
+  result: "passed" | "failed" | "blocked";
+  artifactInputPaths: string[];
+}
+
+function matrixEvidenceInputs(value: unknown, requirements: readonly string[]): MatrixEvidenceInput[] {
+  if (!Array.isArray(value) || value.length > 64) throw new Error("interfaceEvidence must be a bounded array.");
+  const entries = value;
+  return entries.map((raw, index) => {
+    const item = matrixInputObject(raw, MATRIX_EVIDENCE_INPUT_KEYS, `interfaceEvidence[${index}]`);
+    const pathsValue = item.artifactInputPaths ?? item.artifactPaths;
+    if (item.artifactInputPaths !== undefined && item.artifactPaths !== undefined) throw new Error("Supply only artifactInputPaths or artifactPaths.");
+    const paths = workflowStringArray(pathsValue, `interfaceEvidence[${index}].artifactInputPaths`);
+    if (!matrixSurface(item.surface)) throw new Error(`interfaceEvidence[${index}].surface is invalid.`);
+    if (!matrixMethod(item.method) || item.method !== INTERFACE_METHOD_BY_SURFACE[item.surface]) throw new Error(`interfaceEvidence[${index}].method must be the canonical method for its surface.`);
+    const acceptanceCheckId = workflowText(item.acceptanceCheckId ?? item.checkId ?? item.checkSpecId, `interfaceEvidence[${index}].acceptanceCheckId`, 256);
+    const requirementIds = matrixInputIds(item.requirementIds, requirements, `interfaceEvidence[${index}].requirementIds`);
+    const scenario = workflowText(item.scenario ?? item.interaction, `interfaceEvidence[${index}].scenario`, 8 * 1024);
+    const invocation = workflowText(item.invocation ?? item.interaction, `interfaceEvidence[${index}].invocation`, 8 * 1024);
+    const environment = workflowText(item.environment ?? item.controlledEnvironment, `interfaceEvidence[${index}].environment`, 8 * 1024);
+    const observedResult = workflowText(item.observedResult ?? item.observedOutcome, `interfaceEvidence[${index}].observedResult`, 16 * 1024);
+    const result = item.result;
+    if (result !== "passed" && result !== "failed" && result !== "blocked") throw new Error(`interfaceEvidence[${index}].result is invalid.`);
+    return { acceptanceCheckId, surface: item.surface, method: item.method, requirementIds, scenario, invocation, environment, observedResult, result, artifactInputPaths: paths };
+  });
+}
+
+function evidenceArtifactReferences(records: readonly InterfaceEvidenceRecord[]): BoundedEvidenceReference[] {
+  return records.flatMap((record) => record.artifactReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference !== "string"));
+}
+
 export interface PrimaryWorkflowControllerDependencies {
   pi: LedgerAppender;
   getSessionManager(): LedgerSessionManager | undefined;
@@ -601,6 +762,10 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       packetAuthor: "Primary",
       acceptanceChecks,
       authorityConstraints,
+      // Every newly authored packet opts into the interface-matched gate.
+      // Legacy records recovered from older ledgers remain compatible because
+      // they do not receive this additive policy during reconstruction.
+      interfaceEvidencePolicy: "interface-matched-v1" as const,
     };
     for (const to of ["classified", "specified", "red-test-ready"] as const) {
       record = applyPhaseTransition(record, {
@@ -806,17 +971,23 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       residualRisks,
     };
     if (!validatePrimaryInspection(inspection, packetChecks)) throw new Error("Primary inspection is incomplete, malformed, or does not exactly cover passing packet acceptance checks.");
+    const previousMatrixArtifacts = evidenceArtifactReferences(current.interfaceEvidence ?? []);
     let next = {
       ...current,
       primaryInspection: inspection,
-      // Reinspection after blocked recovery invalidates any review tied to the
-      // replaced fingerprint. Remediation already clears these records when
-      // Hand starts its correction assignment.
+      // Reinspection after blocked recovery invalidates every current gate
+      // bound to the replaced fingerprint, including Phase 4 artifacts.
       ...(current.primaryInspection !== undefined ? {
         scaleReview: undefined,
         scaleWaiver: undefined,
         scaleVerdict: undefined,
         scaleWaiverReference: undefined,
+      } : {}),
+      ...(current.interfaceEvidence !== undefined ? {
+        acceptanceCheckSpecs: undefined,
+        applicabilityDecisions: undefined,
+        interfaceEvidence: undefined,
+        evidence: current.evidence.filter((reference) => !previousMatrixArtifacts.some((artifact) => artifact.id === reference.id)),
       } : {}),
       scaleAdmission: undefined,
       residualRisks: [...new Set([...current.residualRisks, ...inspection.residualRisks])],
@@ -860,12 +1031,138 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       to: "evidence-ready", actor: "Primary", timestamp: inspection.inspectedAt,
       reason: "Primary completed the full diff, changed-path, out-of-scope, and independent-check inspection.", reference: `inspection:${inspection.id}`,
     });
-    next.nextGate = "scale-review-or-waiver";
+    next.nextGate = next.interfaceEvidencePolicy === "interface-matched-v1"
+      ? "interface-evidence"
+      : "scale-review-or-waiver";
     const result = commit(next, inspection.inspectedAt);
     if (current.primaryInspection !== undefined) cleanupInspectionArtifacts(current.primaryInspection);
+    if (previousMatrixArtifacts.length > 0) cleanupEvidenceArtifacts(previousMatrixArtifacts);
     return result;
     } catch (error) {
       if (captured !== undefined) cleanupInspectionArtifactDirectory(captured.artifactDirectory);
+      throw error;
+    }
+  };
+
+  const recordEvidence = (input: Record<string, unknown>): WorkflowActionResult => {
+    assertWorkflowActionFields(input, [
+      "workItemId", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence", "evidenceRecords", "records", "observations", "checks", "decisions",
+    ]);
+    const current = deps.getWorkflowRecord();
+    if (!current) throw new Error("Cannot record interface evidence without a prior workflow packet.");
+    const validation = validateWorkflowRecord(current);
+    if (!validation.ok) throw new Error(`Cannot record interface evidence from blocked workflow state: ${validation.reason}`);
+    if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
+    if (current.phase !== "evidence-ready") throw new Error(`Interface evidence requires evidence-ready phase; current phase is ${current.phase}.`);
+    if (!current.primaryInspection || !validatePrimaryInspection(current.primaryInspection, current.acceptanceChecks)) {
+      throw new Error("Interface evidence requires a complete current Primary inspection.");
+    }
+    const verifyInspection = deps.verifyInspectionArtifacts
+      ?? ((cwd: string, inspection: PrimaryInspection) => verifyInspectionArtifacts(cwd, inspection));
+    if (!verifyInspection(deps.cwd(), current.primaryInspection)) {
+      throw new Error("Interface evidence requires fresh, untampered inspection artifacts and an unchanged checkout.");
+    }
+    const timestamp = workflowIsoNow(deps.now);
+    const existingMatrix = current.acceptanceCheckSpecs !== undefined
+      || current.applicabilityDecisions !== undefined
+      || current.interfaceEvidence !== undefined;
+    // A passing, fresh current matrix is immutable for this inspection.
+    // Failed, blocked, tampered, or expired evidence may be retried, but the
+    // replacement remains bound to the same inspection and is only committed
+    // after ledger acknowledgement.
+    let currentMatrixPasses = validateInterfaceEvidenceMatrix(current);
+    if (currentMatrixPasses) {
+      const currentReferences = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences);
+      const currentArtifacts = currentReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null);
+      currentMatrixPasses = currentArtifacts.length === currentReferences.length
+        && (currentArtifacts.length === 0 || verifyEvidenceArtifacts(currentArtifacts, new Date(timestamp)));
+    }
+    if (existingMatrix && currentMatrixPasses) {
+      throw new Error("A passing current interface evidence matrix already exists; replacement is rejected.");
+    }
+    const previousMatrixArtifacts = evidenceArtifactReferences(current.interfaceEvidence ?? []);
+    const previousMatrixArtifactIds = new Set(previousMatrixArtifacts.map((artifact) => artifact.id));
+    const rawChecks = input.acceptanceCheckSpecs ?? input.checks;
+    const rawDecisions = input.applicabilityDecisions ?? input.decisions;
+    const rawEvidence = input.interfaceEvidence ?? input.evidenceRecords ?? input.records ?? input.observations;
+    if (input.acceptanceCheckSpecs !== undefined && input.checks !== undefined) throw new Error("Supply only acceptanceCheckSpecs or checks.");
+    if (input.applicabilityDecisions !== undefined && input.decisions !== undefined) throw new Error("Supply only applicabilityDecisions or decisions.");
+    if ([input.interfaceEvidence, input.evidenceRecords, input.records, input.observations].filter((value) => value !== undefined).length > 1) throw new Error("Supply only one interface evidence records field.");
+    const inspection = current.primaryInspection;
+    const checkSpecs = matrixCheckSpecs(rawChecks, current.requirementIds);
+    const decisions = matrixDecisions(rawDecisions, current.requirementIds, inspection.id, inspection.diffFingerprint, timestamp);
+    const evidenceInputs = matrixEvidenceInputs(rawEvidence, current.requirementIds);
+    const allPaths = evidenceInputs.flatMap((record) => record.artifactInputPaths);
+    // Import only explicit paths supplied in the bounded action payload. No
+    // command, browser, process, network, or discovered path is executed.
+    const imported = allPaths.length === 0
+      ? { artifacts: [] as EvidenceArtifactDescriptor[], directory: undefined, totalBytes: 0 }
+      : importEvidenceArtifacts(allPaths, {
+        cwd: deps.cwd(),
+        now: new Date(timestamp),
+        expiresAt: new Date(Date.parse(timestamp) + EVIDENCE_ARTIFACT_TTL_MS).toISOString(),
+        retentionClass: "session",
+      });
+    let cursor = 0;
+    try {
+      const evidenceRecords: InterfaceEvidenceRecord[] = evidenceInputs.map((inputRecord, index) => {
+        const artifactReferences = imported.artifacts.slice(cursor, cursor + inputRecord.artifactInputPaths.length);
+        cursor += inputRecord.artifactInputPaths.length;
+        if (artifactReferences.length !== inputRecord.artifactInputPaths.length) throw new Error("Evidence artifact import count does not match supplied records.");
+        const contentIdentity = artifactReferences.map((reference) => reference.id).join("-");
+        // Include the prior current record identities so a retry creates a
+        // distinct historical snapshot even when the same source content is
+        // supplied again.
+        const priorIdentity = (current.interfaceEvidence ?? []).map((evidence) => evidence.id).join("|");
+        return {
+          id: `interface-evidence-${inspection.id}-${index}-${createHash("sha256").update(`${contentIdentity}|${priorIdentity}`).digest("hex").slice(0, 16)}`,
+          workItemId: current.workItemId,
+          requirementIds: [...inputRecord.requirementIds],
+          surface: inputRecord.surface,
+          method: inputRecord.method,
+          acceptanceCheckId: inputRecord.acceptanceCheckId,
+          scenario: inputRecord.scenario,
+          invocation: inputRecord.invocation,
+          environment: inputRecord.environment,
+          observedResult: inputRecord.observedResult,
+          artifactReferences,
+          result: inputRecord.result,
+          actor: "Primary",
+          capturedAt: timestamp,
+          adapter: "primary-observed-artifact",
+          adapterVersion: "1",
+          redactionStatus: "verified-clean",
+          retentionClass: "session",
+          expiresAt: imported.artifacts[0]?.expiresAt ?? new Date(Date.parse(timestamp) + EVIDENCE_ARTIFACT_TTL_MS).toISOString(),
+          inspectionId: inspection.id,
+          diffFingerprint: inspection.diffFingerprint,
+        };
+      });
+      const next = {
+        ...current,
+        interfaceEvidencePolicy: "interface-matched-v1" as const,
+        acceptanceCheckSpecs: checkSpecs,
+        applicabilityDecisions: decisions,
+        interfaceEvidence: evidenceRecords,
+        // Generic evidence is the active projection. Keep historical matrix
+        // snapshots in the append-only ledger, but remove superseded matrix
+        // descriptors from this current projection before adding the retry.
+        evidence: [
+          ...current.evidence.filter((reference) => !previousMatrixArtifactIds.has(reference.id)),
+          ...imported.artifacts,
+        ],
+        nextGate: "scale-review-or-waiver",
+      } as WorkflowRecord;
+      const matrixValidation = validateInterfaceEvidenceMatrixDetailed(next, { requirePassing: false });
+      if (!matrixValidation.ok) throw new Error(`Interface evidence matrix is incomplete or invalid: ${matrixValidation.reason ?? "unknown matrix error"}`);
+      next.nextGate = validateInterfaceEvidenceMatrix(next) ? "scale-review-or-waiver" : "interface-evidence";
+      const result = commit(next, timestamp);
+      // The old artifacts are no longer active only after append acknowledgement
+      // succeeds. If append fails, the previous current snapshot remains intact.
+      if (previousMatrixArtifacts.length > 0) cleanupEvidenceArtifacts(previousMatrixArtifacts);
+      return result;
+    } catch (error) {
+      if (imported.directory !== undefined) cleanupEvidenceArtifacts(imported.directory);
       throw error;
     }
   };
@@ -896,12 +1193,28 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     if (!current.primaryInspection || !verify(deps.cwd(), current.primaryInspection)) {
       throw new Error("Scale review requires fresh, untampered inspection artifacts and an unchanged checkout.");
     }
+    const evidenceClock = new Date(workflowIsoNow(deps.now));
+    if (requiresInterfaceEvidence(current)) {
+      if (!validateInterfaceEvidenceMatrix(current)) throw new Error(`Scale review requires passing current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+      const matrixReferences = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences);
+      const matrixArtifacts = matrixReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null);
+      if (matrixArtifacts.length !== matrixReferences.length || (matrixArtifacts.length > 0 && !verifyEvidenceArtifacts(matrixArtifacts, evidenceClock))) throw new Error("Scale review requires fresh, present, untampered imported interface evidence artifacts.");
+    }
     const previousAttempt = current.remediation?.attempt ?? 0;
     const evidenceReferences = input.evidenceReferences === undefined ? [] : input.evidenceReferences;
     if (!Array.isArray(evidenceReferences) || evidenceReferences.length === 0 || evidenceReferences.length > 64) throw new Error("evidenceReferences must be a bounded nonempty array.");
     const normalizedEvidence = evidenceReferences.map((entry, index) => workflowGateReference(entry, `evidenceReferences[${index}]`));
     const verdict = input.verdict;
     if (verdict !== "pass" && verdict !== "changes-required") throw new Error("Scale review verdict must be pass or changes-required.");
+    if (verdict === "pass" && requiresInterfaceEvidence(current)) {
+      const suppliedReferences = new Set(normalizedEvidence.map((reference) => typeof reference === "string" ? reference : reference.id));
+      const matrixReferences = (current.interfaceEvidence ?? [])
+        .flatMap((evidence) => evidence.artifactReferences)
+        .map((reference) => typeof reference === "string" ? reference : reference.id);
+      if (!matrixReferences.every((reference) => suppliedReferences.has(reference))) {
+        throw new Error("A passing Scale review must reference every current interface evidence artifact.");
+      }
+    }
     const findings = workflowFindingList(input.findings ?? []);
     const residualUncertainty = workflowText(input.residualUncertainty, "residualUncertainty", 8 * 1024);
     if (!current.primaryInspection) throw new Error("Scale review requires the current Primary inspection.");
@@ -986,9 +1299,15 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     if (current.phase !== "evidence-ready") throw new Error(`Scale waiver requires evidence-ready phase; current phase is ${current.phase}.`);
     if (current.scaleWaiver !== undefined || current.scaleReview !== undefined) throw new Error("A current Scale waiver or review already exists; replacement is rejected.");
     if (!current.primaryInspection) throw new Error("Scale waiver never bypasses Primary inspection.");
+    const timestamp = workflowIsoNow(deps.now);
+    if (requiresInterfaceEvidence(current)) {
+      if (!validateInterfaceEvidenceMatrix(current)) throw new Error(`Scale waiver requires complete current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+      const matrixReferences = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences);
+      const matrixArtifacts = matrixReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null);
+      if (matrixArtifacts.length !== matrixReferences.length || (matrixArtifacts.length > 0 && !verifyEvidenceArtifacts(matrixArtifacts, new Date(timestamp)))) throw new Error("Scale waiver requires fresh, present, untampered imported interface evidence artifacts.");
+    }
     const basis = input.basis;
     if (basis !== "user-explicit" && basis !== "policy") throw new Error("Scale waiver basis must be user-explicit or policy.");
-    const timestamp = workflowIsoNow(deps.now);
     let waiver: ScaleWaiver;
     if (basis === "user-explicit") {
       if (input.policyPath !== undefined) throw new Error("A user-explicit Scale waiver cannot supply policyPath.");
@@ -1048,9 +1367,15 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     if (!validation.ok) throw new Error(`Cannot accept blocked workflow state: ${validation.reason}`);
     if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
     if (!current.primaryInspection) throw new Error("Acceptance requires the current Primary inspection.");
+    const timestamp = workflowIsoNow(deps.now);
+    if (requiresInterfaceEvidence(current)) {
+      if (!validateInterfaceEvidenceMatrix(current)) throw new Error(`Acceptance requires complete current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+      const matrixReferences = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences);
+      const matrixArtifacts = matrixReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null);
+      if (matrixArtifacts.length !== matrixReferences.length || (matrixArtifacts.length > 0 && !verifyEvidenceArtifacts(matrixArtifacts, new Date(timestamp)))) throw new Error("Acceptance requires fresh, present, untampered imported interface evidence artifacts.");
+    }
     const verify = deps.verifyInspectionArtifacts ?? ((cwd: string, inspection: PrimaryInspection) => verifyInspectionArtifacts(cwd, inspection));
     if (!verify(deps.cwd(), current.primaryInspection)) throw new Error("Acceptance requires fresh, untampered inspection artifacts and an unchanged checkout.");
-    const timestamp = workflowIsoNow(deps.now);
     if (current.scaleWaiver?.basis === "policy") {
       const expiry = Date.parse(current.scaleWaiver.expiresAt ?? current.scaleWaiver.reviewAt ?? "");
       const review = Date.parse(current.scaleWaiver.reviewAt ?? current.scaleWaiver.expiresAt ?? "");
@@ -1059,10 +1384,12 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       }
     }
     const reason = input.reason === undefined ? "Primary accepted after the current Scale gate." : workflowText(input.reason, "reason", 8 * 1024);
+    const matrixArtifacts = (current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences.filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null));
     const result = commit(applyPhaseTransition(current, {
       to: "accepted", actor: "Primary", timestamp, reason, reference: `accept:${current.workItemId}`,
     }), timestamp);
     cleanupInspectionArtifacts(current.primaryInspection);
+    if (matrixArtifacts.length > 0) cleanupEvidenceArtifacts(matrixArtifacts);
     return result;
   };
 
@@ -1075,10 +1402,11 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       if (action === "record-red") return recordRed(params);
       if (action === "waive-tdd") return waiveTdd(params);
       if (action === "record-inspection") return recordInspection(params);
+      if (action === "record-evidence" || action === "record-evidence-matrix") return recordEvidence(params);
       if (action === "record-scale-review") return recordScaleReview(params);
       if (action === "waive-scale") return waiveScale(params);
       if (action === "accept") return accept(params);
-      throw new Error("Workflow action must be specify, record-red, waive-tdd, record-inspection, record-scale-review, waive-scale, or accept.");
+      throw new Error("Workflow action must be specify, record-red, waive-tdd, record-inspection, record-evidence, record-scale-review, waive-scale, or accept.");
     },
   };
 }
@@ -1130,8 +1458,8 @@ export function registerGodmodeTools(
     pi.registerTool({
       name: "godmode_workflow",
       label: "Author Primary Workflow",
-      description: "Trusted Primary workflow authoring for one packet, intended-red/TDD gate, complete Primary inspection, exact Scale review, narrow Scale waiver, or final acceptance. The controller stamps Primary authority, timestamps, hashes the checkout red test, binds Scale to the exact completed run, applies canonical gates, and appends the ledger only after exact acknowledgement. No actor, author, approver, phase, history, record, arbitrary evidence, run identity, shell, model, cwd, git, or acceptance authority can be supplied by the caller.",
-      promptSnippet: "Use only for the active Primary to specify a packet, record intended red/TDD evidence, record complete inspection, record the exact completed Scale review, record a narrow compensated Scale waiver, or accept after all gates; the controller supplies authority, timestamps, hashes, run identity, and lifecycle phases.",
+      description: "Trusted Primary workflow authoring for one packet, intended-red/TDD gate, complete Primary inspection, interface-matched evidence matrix, exact Scale review, narrow Scale waiver, or final acceptance. The controller stamps Primary authority, timestamps, hashes the checkout red test, binds Scale to the exact completed run, imports only explicit passive artifacts, applies canonical gates, and appends the ledger only after exact acknowledgement. No actor, author, approver, phase, history, record, arbitrary evidence, run identity, shell, model, cwd, git, or acceptance authority can be supplied by the caller.",
+      promptSnippet: "Use only for the active Primary to specify a packet, record intended red/TDD evidence, record complete inspection, record interface-matched evidence with explicit passive artifact paths, record the exact completed Scale review, record a narrow compensated Scale waiver, or accept after all gates; the controller supplies authority, timestamps, hashes, run identity, and lifecycle phases and never executes invocation text.",
       parameters: WorkflowSchema,
       async execute(_toolCallId, params) {
         if (mode.snapshot.phase !== "active") throw new Error(`Primary workflow authoring requires healthy active Godmode; current mode is ${mode.snapshot.phase}.`);

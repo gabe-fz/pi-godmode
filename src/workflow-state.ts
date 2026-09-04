@@ -14,6 +14,13 @@ import {
   type FunctionalRequirement,
   type BoundedEvidenceReference,
   type IndependentCheck,
+  type AcceptanceCheckSpec,
+  type EvidenceApplicabilityDecision,
+  type InterfaceEvidenceRecord,
+  INTERFACE_SURFACES,
+  INTERFACE_METHOD_BY_SURFACE,
+  type InterfaceSurface,
+  type InterfaceEvidenceMethod,
   type PrimaryInspection,
   type ScaleFinding,
   type ScaleReview,
@@ -38,6 +45,7 @@ const WORKFLOW_RECORD_KEYS = new Set([
   "acceptanceChecks", "authorityConstraints", "redTestEvidence", "tddWaiver", "unresolvedDecisions", "redTestReference",
   "tddWaiverReference", "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "latestCapsuleReference",
   "primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation",
+  "interfaceEvidencePolicy", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence",
 ]);
 
 const ROADMAP_TRANSITIONS: Readonly<Record<RoadmapStatus, readonly RoadmapStatus[]>> = {
@@ -162,6 +170,10 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
     "scaleReview",
     "scaleWaiver",
     "remediation",
+    "interfaceEvidencePolicy",
+    "acceptanceCheckSpecs",
+    "applicabilityDecisions",
+    "interfaceEvidence",
   ] as const;
   for (const key of optionalKeys) {
     const value = record[key];
@@ -216,6 +228,22 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
           sourceFindingIds: Array.isArray(objectValue.sourceFindingIds) ? [...objectValue.sourceFindingIds] : objectValue.sourceFindingIds,
           correctionScope: Array.isArray(objectValue.correctionScope) ? [...objectValue.correctionScope] : objectValue.correctionScope,
         };
+      } else if (key === "acceptanceCheckSpecs" && Array.isArray(value)) {
+        copied = value.map((entry) => isObject(entry) ? {
+          ...(entry as Record<string, unknown>),
+          requirementIds: Array.isArray(entry.requirementIds) ? [...entry.requirementIds] : entry.requirementIds,
+        } : entry);
+      } else if (key === "applicabilityDecisions" && Array.isArray(value)) {
+        copied = value.map((entry) => isObject(entry) ? {
+          ...(entry as Record<string, unknown>),
+          requirementIds: Array.isArray(entry.requirementIds) ? [...entry.requirementIds] : entry.requirementIds,
+        } : entry);
+      } else if (key === "interfaceEvidence" && Array.isArray(value)) {
+        copied = value.map((entry) => isObject(entry) ? {
+          ...(entry as Record<string, unknown>),
+          requirementIds: Array.isArray(entry.requirementIds) ? [...entry.requirementIds] : entry.requirementIds,
+          artifactReferences: Array.isArray(entry.artifactReferences) ? entry.artifactReferences.map((reference) => isObject(reference) ? { ...(reference as Record<string, unknown>) } : reference) : entry.artifactReferences,
+        } : entry);
       }
       (cloned as unknown as Record<string, unknown>)[key] = copied;
     }
@@ -644,6 +672,202 @@ export function validateRemediation(value: unknown): value is Remediation {
   return validRemediation(value);
 }
 
+const INTERFACE_POLICY = "interface-matched-v1" as const;
+const INTERFACE_SHA256 = /^[0-9a-f]{64}$/u;
+const INTERFACE_CHECK_KEYS = new Set(["id", "surface", "method", "requirementIds", "interaction", "scenario", "expectedOutcome"]);
+const INTERFACE_DECISION_KEYS = new Set(["surface", "requirementIds", "applicability", "reason", "actor", "decidedAt", "inspectionId", "diffFingerprint"]);
+const INTERFACE_EVIDENCE_KEYS = new Set([
+  "id", "workItemId", "requirementIds", "surface", "method", "acceptanceCheckId", "scenario", "invocation", "environment",
+  "observedResult", "artifactReferences", "result", "actor", "capturedAt", "adapter", "adapterVersion",
+  "redactionStatus", "retentionClass", "expiresAt", "inspectionId", "diffFingerprint",
+]);
+const INTERFACE_ADAPTERS = new Set(["primary-observed-artifact"]);
+const INTERFACE_SECRET = /(?:bearer\s+[a-z0-9._~+/=-]{8,}|(?:authorization|cookie|set-cookie|password|passphrase|private[ _-]?key|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|secret)\s*[:=]|(?:x-amz-(?:signature|security-token)|sig|access_token|api_key|token|secret|password)=|-----BEGIN [^-]+-----|(?:^|[\s._-])(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][a-z0-9._-]{8,})/iu;
+
+function interfaceText(value: unknown, max = 8 * 1024): value is string {
+  return boundedPacketString(value, max) && !INTERFACE_SECRET.test(value);
+}
+
+function interfaceIds(value: unknown, declared: Set<string>): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 64
+    && value.every((id) => typeof id === "string" && REQUIREMENT_ID.test(id) && declared.has(id))
+    && new Set(value).size === value.length;
+}
+
+function interfaceSurface(value: unknown): value is InterfaceSurface {
+  return typeof value === "string" && (INTERFACE_SURFACES as readonly string[]).includes(value);
+}
+
+function interfaceMethod(value: unknown): value is InterfaceEvidenceMethod {
+  return typeof value === "string" && (Object.values(INTERFACE_METHOD_BY_SURFACE) as readonly string[]).includes(value);
+}
+
+function interfaceReference(value: unknown): boolean {
+  if (typeof value === "string") return interfaceText(value, 4 * 1024);
+  if (!validArtifactReference(value) || !isObject(value)) return false;
+  for (const key of ["id", "kind", "label", "source"] as const) {
+    const text = value[key];
+    if (text !== undefined && !interfaceText(text, key === "source" ? 4 * 1024 : key === "label" ? 1024 : 256)) return false;
+  }
+  if (value.expiresAt !== undefined && (!canonicalUtcDate(value.expiresAt)
+    || (value.createdAt !== undefined && (!canonicalUtcDate(value.createdAt) || Date.parse(value.expiresAt) <= Date.parse(value.createdAt))))) return false;
+  if (value.sha256 !== undefined && (!INTERFACE_SHA256.test(typeof value.sha256 === "string" ? value.sha256 : "")
+    || typeof value.source !== "string" || typeof value.bytes !== "number")) return false;
+  return true;
+}
+
+function referenceKey(value: string | BoundedEvidenceReference): string {
+  return typeof value === "string" ? value : value.id;
+}
+
+/** Return whether a record opts into the Phase 4 gate. Legacy records with no
+ * additive policy fields remain structurally recoverable for earlier phases. */
+export function requiresInterfaceEvidence(record: Pick<WorkflowRecord, "requirementIds" | "interfaceEvidencePolicy" | "acceptanceCheckSpecs" | "applicabilityDecisions" | "interfaceEvidence">): boolean {
+  return record.interfaceEvidencePolicy === INTERFACE_POLICY
+    || record.acceptanceCheckSpecs !== undefined
+    || record.applicabilityDecisions !== undefined
+    || record.interfaceEvidence !== undefined;
+}
+
+export interface InterfaceEvidenceMatrixValidation {
+  ok: boolean;
+  reason?: string;
+}
+
+/** Strict structural and provenance validation for the current Phase 4
+ * matrix. It deliberately does not inspect artifact paths; use the bounded
+ * importer verifier for that live freshness check. */
+export function validateInterfaceEvidenceMatrixDetailed(record: unknown, options: { requirePassing?: boolean } = {}): InterfaceEvidenceMatrixValidation {
+  const requirePassing = options.requirePassing !== false;
+  if (!isObject(record)) return { ok: false, reason: "Workflow record is not an object." };
+  const requirements = new Set((Array.isArray(record.requirementIds) ? record.requirementIds : []).filter((id): id is string => typeof id === "string" && REQUIREMENT_ID.test(id)));
+  if (record.interfaceEvidencePolicy !== INTERFACE_POLICY) {
+    const hasAny = record.interfaceEvidencePolicy !== undefined || record.acceptanceCheckSpecs !== undefined || record.applicabilityDecisions !== undefined || record.interfaceEvidence !== undefined;
+    return hasAny
+      ? { ok: false, reason: "Interface evidence fields require interface-matched-v1 policy." }
+      : { ok: false, reason: "Interface evidence matrix is not present." };
+  }
+  if (requirements.size === 0) return { ok: false, reason: "Interface evidence matrix requires declared requirements." };
+  const inspection = isObject(record.primaryInspection) ? record.primaryInspection : undefined;
+  if (!inspection || typeof inspection.id !== "string" || typeof inspection.diffFingerprint !== "string" || !INTERFACE_SHA256.test(inspection.diffFingerprint)) {
+    return { ok: false, reason: "Interface evidence matrix requires a complete current Primary inspection." };
+  }
+  if (!Array.isArray(record.acceptanceCheckSpecs) || record.acceptanceCheckSpecs.length > 64) return { ok: false, reason: "Interface evidence matrix requires bounded acceptance check specs." };
+  if (!Array.isArray(record.applicabilityDecisions) || record.applicabilityDecisions.length === 0 || record.applicabilityDecisions.length > requirements.size * INTERFACE_SURFACES.length) return { ok: false, reason: "Interface evidence matrix requires exactly one applicability decision for every requirement and surface." };
+  if (!Array.isArray(record.interfaceEvidence) || record.interfaceEvidence.length > 64) return { ok: false, reason: "Interface evidence matrix requires bounded interface evidence records." };
+
+  const pair = (requirement: string, surface: string): string => `${requirement}\\0${surface}`;
+  const decisionPairs = new Set<string>();
+  const applicability = new Map<string, "applicable" | "not-applicable">();
+  for (const raw of record.applicabilityDecisions) {
+    if (!isObject(raw) || !hasOnlyKeys(raw, INTERFACE_DECISION_KEYS)
+      || !interfaceSurface(raw.surface) || !interfaceIds(raw.requirementIds, requirements)
+      || (raw.applicability !== "applicable" && raw.applicability !== "not-applicable")
+      || !interfaceText(raw.reason, 4 * 1024)
+      || (raw.applicability === "not-applicable" && /^(?:n\/?a|not\s+applicable|none|unknown|tbd)$/iu.test(raw.reason.trim()))
+      || raw.actor !== "Primary"
+      || !canonicalUtcDate(raw.decidedAt) || raw.inspectionId !== inspection.id
+      || typeof raw.diffFingerprint !== "string" || raw.diffFingerprint !== inspection.diffFingerprint) {
+      return { ok: false, reason: "Interface applicability decision is malformed, stale, or not Primary-authored." };
+    }
+    for (const requirement of raw.requirementIds) {
+      const key = pair(requirement, raw.surface);
+      if (decisionPairs.has(key)) return { ok: false, reason: "Interface applicability matrix contains duplicate requirement/surface decisions." };
+      decisionPairs.add(key);
+      applicability.set(key, raw.applicability);
+    }
+  }
+  for (const requirement of requirements) for (const surface of INTERFACE_SURFACES) {
+    if (!decisionPairs.has(pair(requirement, surface))) return { ok: false, reason: "Interface applicability matrix is missing a requirement/surface decision." };
+  }
+
+  const checkIds = new Set<string>();
+  const checkById = new Map<string, AcceptanceCheckSpec>();
+  const checkPairs = new Set<string>();
+  for (const raw of record.acceptanceCheckSpecs) {
+    if (!isObject(raw) || !hasOnlyKeys(raw, INTERFACE_CHECK_KEYS) || !interfaceText(raw.id, 256)
+      || !interfaceSurface(raw.surface) || !interfaceMethod(raw.method)
+      || raw.method !== INTERFACE_METHOD_BY_SURFACE[raw.surface]
+      || !interfaceIds(raw.requirementIds, requirements)
+      || !interfaceText(raw.interaction, 8 * 1024)
+      || (raw.scenario !== undefined && !interfaceText(raw.scenario, 8 * 1024))
+      || (raw.expectedOutcome !== undefined && !interfaceText(raw.expectedOutcome, 8 * 1024))) {
+      return { ok: false, reason: "Acceptance check spec is malformed or maps undeclared requirements." };
+    }
+    if (checkIds.has(raw.id)) return { ok: false, reason: "Acceptance check IDs must be unique." };
+    checkIds.add(raw.id);
+    const check = raw as unknown as AcceptanceCheckSpec;
+    checkById.set(check.id, check);
+    for (const requirement of check.requirementIds) {
+      const key = pair(requirement, check.surface);
+      if (checkPairs.has(key)) return { ok: false, reason: "Multiple check specs pretend to cover one requirement/surface pair." };
+      checkPairs.add(key);
+    }
+    if (check.requirementIds.some((requirement) => applicability.get(pair(requirement, check.surface)) !== "applicable")) {
+      return { ok: false, reason: "Acceptance check spec covers a not-applicable requirement/surface." };
+    }
+  }
+
+  const evidenceIds = new Set<string>();
+  const references = new Set<string>();
+  const evidencePairs = new Set<string>();
+  for (const raw of record.interfaceEvidence) {
+    if (!isObject(raw) || !hasOnlyKeys(raw, INTERFACE_EVIDENCE_KEYS)
+      || !interfaceText(raw.id, 256) || raw.workItemId !== record.workItemId
+      || !interfaceSurface(raw.surface) || !interfaceMethod(raw.method)
+      || raw.method !== INTERFACE_METHOD_BY_SURFACE[raw.surface]
+      || !interfaceText(raw.acceptanceCheckId, 256)
+      || !interfaceText(raw.scenario, 8 * 1024) || !interfaceText(raw.invocation, 8 * 1024)
+      || !interfaceText(raw.environment, 8 * 1024) || !interfaceText(raw.observedResult, 16 * 1024)
+      || !Array.isArray(raw.artifactReferences) || raw.artifactReferences.length === 0 || raw.artifactReferences.length > 64
+      || !raw.artifactReferences.every(interfaceReference)
+      || (raw.result !== "passed" && raw.result !== "failed" && raw.result !== "blocked")
+      || raw.actor !== "Primary" || !canonicalUtcDate(raw.capturedAt)
+      || typeof raw.adapter !== "string" || !INTERFACE_ADAPTERS.has(raw.adapter)
+      || raw.adapterVersion !== "1" || raw.redactionStatus !== "verified-clean"
+      || (raw.retentionClass !== "session" && raw.retentionClass !== "review" && raw.retentionClass !== "durable")
+      || !canonicalUtcDate(raw.expiresAt) || Date.parse(raw.expiresAt) <= Date.parse(raw.capturedAt)
+      || raw.inspectionId !== inspection.id || raw.diffFingerprint !== inspection.diffFingerprint
+      || !interfaceIds(raw.requirementIds, requirements)) {
+      return { ok: false, reason: "Interface evidence record is malformed, secret-bearing, stale, or unsupported." };
+    }
+    if (evidenceIds.has(raw.id)) return { ok: false, reason: "Interface evidence IDs must be unique." };
+    evidenceIds.add(raw.id);
+    if (requirePassing && raw.result !== "passed") return { ok: false, reason: `Applicable interface evidence remains ${raw.result}; the matrix is not satisfiable.` };
+    const check = checkById.get(raw.acceptanceCheckId);
+    if (!check || check.surface !== raw.surface || check.method !== raw.method || !raw.requirementIds.every((id) => check.requirementIds.includes(id))) return { ok: false, reason: "Interface evidence does not map to its declared check, method, and surface." };
+    for (const requirement of raw.requirementIds) {
+      const key = pair(requirement, raw.surface);
+      if (applicability.get(key) !== "applicable") return { ok: false, reason: "Interface evidence pretends to cover a not-applicable surface." };
+      if (evidencePairs.has(key)) return { ok: false, reason: "Interface evidence matrix contains duplicate requirement/surface evidence." };
+      evidencePairs.add(key);
+    }
+    for (const reference of raw.artifactReferences) {
+      const identity = referenceKey(reference);
+      if (references.has(identity)) return { ok: false, reason: "Interface artifact references must be unique." };
+      references.add(identity);
+    }
+  }
+  for (const requirement of requirements) for (const surface of INTERFACE_SURFACES) {
+    const key = pair(requirement, surface);
+    if (applicability.get(key) === "applicable" && (!checkPairs.has(key) || !evidencePairs.has(key))) {
+      return { ok: false, reason: "Every applicable requirement/surface must have a check and current evidence." };
+    }
+    if (applicability.get(key) === "not-applicable" && (checkPairs.has(key) || evidencePairs.has(key))) {
+      return { ok: false, reason: "Not-applicable surfaces must not be covered by checks or evidence." };
+    }
+  }
+  return { ok: true };
+}
+
+export function validateInterfaceEvidenceMatrix(record: unknown): boolean {
+  return validateInterfaceEvidenceMatrixDetailed(record).ok;
+}
+
+/** Short alias for integrations that call the Phase 4 object an evidence matrix. */
+export const validateEvidenceMatrix = validateInterfaceEvidenceMatrix;
+export const isCompleteInterfaceEvidenceMatrix = validateInterfaceEvidenceMatrix;
+
 function validPacketMetadata(record: Record<string, unknown>): boolean {
   return record.packetAuthor === "Primary"
     && boundedPacketString(record.goal, 32 * 1024)
@@ -898,9 +1122,37 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
   if (inspection !== undefined && !validPrimaryInspection(inspection, record.acceptanceChecks)) {
     return invalid("Primary inspection is malformed, incomplete, or does not cover every packet acceptance check; blocked.");
   }
+  const matrixFields = [record.acceptanceCheckSpecs, record.applicabilityDecisions, record.interfaceEvidence];
+  const hasMatrixFields = matrixFields.some((field) => field !== undefined);
+  const completeMatrixFields = matrixFields.every((field) => field !== undefined);
+  if (record.interfaceEvidencePolicy !== undefined && record.interfaceEvidencePolicy !== "interface-matched-v1") {
+    return invalid("Workflow record contains an unknown interface evidence policy; blocked.");
+  }
+  if (hasMatrixFields && record.interfaceEvidencePolicy !== "interface-matched-v1") {
+    return invalid("Interface evidence fields require interface-matched-v1 policy; blocked.");
+  }
+  if (completeMatrixFields) {
+    const matrixValidation = validateInterfaceEvidenceMatrixDetailed(record, { requirePassing: false });
+    if (!matrixValidation.ok) return invalid(matrixValidation.reason ?? "Interface evidence matrix is incomplete or stale; blocked.");
+  }
+  const matrixRecord = record as unknown as WorkflowRecord;
+  if (requiresInterfaceEvidence(matrixRecord)
+    && ["scale-running", "review-passed", "scale-waived", "accepted"].includes(record.phase)
+    && (!completeMatrixFields || !validateInterfaceEvidenceMatrix(matrixRecord))) {
+    return invalid(`Workflow ${record.phase} requires a complete passing interface evidence matrix; blocked.`);
+  }
   const review = record.scaleReview;
   if (review !== undefined && !validScaleReview(review, inspection)) {
     return invalid("Scale review is stale, summary-only, malformed, or not bound to the current inspection; blocked.");
+  }
+  if (review !== undefined && requiresInterfaceEvidence(matrixRecord) && review.verdict === "pass") {
+    const reviewReferences = new Set(review.evidenceReferences.map(referenceIdentity));
+    const matrixReferences = (matrixRecord.interfaceEvidence ?? [])
+      .flatMap((evidence) => evidence.artifactReferences)
+      .map(referenceIdentity);
+    if (!matrixReferences.every((reference) => reviewReferences.has(reference))) {
+      return invalid("Passing Scale review must reference every current interface evidence artifact; blocked.");
+    }
   }
   const scaleAdmission = record.scaleAdmission;
   if (scaleAdmission !== undefined && !validScaleAdmission(scaleAdmission, record.workItemId, inspection)) {
@@ -1020,10 +1272,7 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     return invalid("Workflow roadmap does not cover every declared requirement; blocked.");
   }
   for (const evidence of record.evidence) {
-    if (!isObject(evidence) || !nonEmptyString(evidence.id)) return invalid("Workflow record contains malformed evidence state; blocked.");
-    for (const value of Object.values(evidence)) {
-      if (value !== undefined && typeof value !== "string") return invalid("Workflow record contains malformed evidence metadata; blocked.");
-    }
+    if (!isObject(evidence) || !validArtifactReference(evidence)) return invalid("Workflow record contains malformed evidence state; blocked.");
   }
   let priorPhase: string | undefined;
   const priorRoadmap = new Map<string, string>();
@@ -1113,11 +1362,21 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
     if (!current.primaryInspection || !validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)) {
       throw new Error("Evidence-ready and Scale admission require a complete current Primary inspection covering every packet acceptance check.");
     }
+    const matrixPresent = current.acceptanceCheckSpecs !== undefined
+      || current.applicabilityDecisions !== undefined
+      || current.interfaceEvidence !== undefined;
+    if ((transition.to === "scale-running" || (transition.to === "evidence-ready" && matrixPresent))
+      && requiresInterfaceEvidence(current) && !validateInterfaceEvidenceMatrix(current)) {
+      throw new Error(`${transition.to === "scale-running" ? "Scale admission" : "Evidence-ready state"} requires a complete current interface evidence matrix: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+    }
     if (transition.to === "scale-running" && current.scaleWaiver !== undefined) {
       throw new Error("A Scale-waived workflow cannot also enter Scale review without a fresh gate decision.");
     }
   }
   if (transition.to === "review-passed") {
+    if (requiresInterfaceEvidence(current) && !validateInterfaceEvidenceMatrix(current)) {
+      throw new Error(`Review-passed requires complete current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+    }
     if (current.scaleWaiver !== undefined) throw new Error("A Scale-waived workflow cannot also pass a Scale review.");
     if (!current.scaleAdmission?.boundRunId
       || current.scaleReview?.admissionId !== current.scaleAdmission.admissionId
@@ -1131,6 +1390,9 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
     if (current.scaleReview.verdict !== "pass") throw new Error("Review-passed requires a passing Scale review.");
   }
   if (transition.to === "scale-waived") {
+    if (requiresInterfaceEvidence(current) && !validateInterfaceEvidenceMatrix(current)) {
+      throw new Error(`Scale waiver requires complete current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+    }
     if (current.scaleReview !== undefined) throw new Error("A workflow with a Scale review cannot also enter Scale-waived state.");
     if (!current.primaryInspection || !validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)
       || !current.scaleWaiver || !validScaleWaiver(current.scaleWaiver, current.workItemId)) {
@@ -1138,6 +1400,9 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
     }
   }
   if (transition.to === "accepted") {
+    if (requiresInterfaceEvidence(current) && !validateInterfaceEvidenceMatrix(current)) {
+      throw new Error(`Acceptance requires complete current interface evidence: ${validateInterfaceEvidenceMatrixDetailed(current).reason ?? "matrix incomplete"}`);
+    }
     const reviewPath = current.phase === "review-passed"
       && current.primaryInspection !== undefined
       && current.scaleReview !== undefined
@@ -1201,6 +1466,14 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
     next.scaleWaiver = undefined;
     next.scaleVerdict = undefined;
     next.scaleWaiverReference = undefined;
+    if (requiresInterfaceEvidence(current)) {
+      const matrixReferences = new Set((current.interfaceEvidence ?? []).flatMap((evidence) => evidence.artifactReferences.map((reference) => referenceKey(reference))));
+      next.evidence = next.evidence.filter((reference) => !matrixReferences.has(reference.id));
+      next.interfaceEvidencePolicy = current.interfaceEvidencePolicy;
+      next.acceptanceCheckSpecs = undefined;
+      next.applicabilityDecisions = undefined;
+      next.interfaceEvidence = undefined;
+    }
   }
   // Retain a bound passing admission through review-passed/accepted so the
   // canonical record durably proves the exact reviewed run. Other exits clear

@@ -22,14 +22,17 @@ function boundedInventory(root: string, maximumEntries = 64): string[] {
   return result;
 }
 
-test("Phase 0 fixture matrix represents only supported TUI, persistence, library, build/config, docs, and hostile surfaces", () => {
-  for (const name of ["ledger-consumer", "tui-surface", "persistence-surface", "build-config-docs", "untrusted"]) {
+test("Phase 0 fixture matrix represents supported passive interface, persistence, library, build/config, docs, and hostile surfaces", () => {
+  for (const name of ["ledger-consumer", "tui-surface", "persistence-surface", "build-config-docs", "browser-surface", "api-surface", "cli-surface", "untrusted"]) {
     assert.equal(existsSync(new URL(`${name}/README.md`, fixtures)), true, `missing fixture: ${name}`);
   }
   assert.equal(existsSync(new URL("tui-surface/src/main.ts", fixtures)), true);
   assert.equal(existsSync(new URL("persistence-surface/data/workflow-v0.json", fixtures)), true);
   assert.equal(existsSync(new URL("persistence-surface/migrations/001-upgrade.ts", fixtures)), true);
   assert.equal(existsSync(new URL("build-config-docs/docs/validation.md", fixtures)), true);
+  assert.equal(existsSync(new URL("browser-surface/observed-flow.txt", fixtures)), true);
+  assert.equal(existsSync(new URL("api-surface/observed-response.txt", fixtures)), true);
+  assert.equal(existsSync(new URL("cli-surface/observed-output.txt", fixtures)), true);
 });
 
 test("hostile fixture inventory is bounded, does not follow escaping symlinks, and never executes command data", () => {

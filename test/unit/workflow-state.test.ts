@@ -64,6 +64,19 @@ function advanceToReview(record = workflowRecord()) {
   return applyPhaseTransition(current, { ...audit, to: "review-passed" });
 }
 
+test("legacy pre-Phase-4 FR-8 records remain recoverable without implicit matrix opt-in", () => {
+  let record = advanceToReview(workflowRecord({
+    requirementIds: ["FR-8"],
+    roadmap: [{ id: "item-8", requirementIds: ["FR-8"], title: "Legacy FR-8 behavior", status: "pending" }],
+  }));
+  record = applyRoadmapTransition(record, "item-8", { ...audit, actor: "Hand", to: "implemented-unverified" });
+  record = applyRoadmapTransition(record, "item-8", { ...audit, to: "verified" });
+  const accepted = applyPhaseTransition(record, { ...audit, to: "accepted" });
+  assert.equal(accepted.phase, "accepted");
+  assert.equal(accepted.interfaceEvidencePolicy, undefined);
+  assert.equal(validateWorkflowRecord(accepted).ok, true);
+});
+
 test("blocking and recovery are bounded by the normative phase graph", () => {
   const verifying = ([
     "classified", "specified", "red-test-ready", "red-test-observed",

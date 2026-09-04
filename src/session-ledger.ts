@@ -259,7 +259,7 @@ function sanitizedRecord(record: WorkflowRecord): WorkflowRecord {
   // Phase 3 gate records are authority-bearing completeness evidence. Unlike
   // optional prose, they may not be silently truncated or redacted by ledger
   // sanitization: omission or alteration would manufacture a different gate.
-  for (const key of ["primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation"] as const) {
+  for (const key of ["primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation", "acceptanceCheckSpecs", "applicabilityDecisions", "interfaceEvidence"] as const) {
     const original = record[key];
     const persisted = (value as unknown as Record<string, unknown>)[key];
     if (original !== undefined && !exactPersistedValue(persisted, original)) {
@@ -1226,6 +1226,7 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
     residualRisks: current.residualRisks,
     ...(current.tddWaiverReference !== undefined ? { tddWaiverReference: current.tddWaiverReference } : {}),
     ...(current.scaleWaiverReference !== undefined ? { scaleWaiverReference: current.scaleWaiverReference } : {}),
+    ...(current.interfaceEvidencePolicy !== undefined ? { interfaceEvidencePolicy: current.interfaceEvidencePolicy } : {}),
   };
   // Check the unsanitized required state before redaction. A sanitized marker
   // is safe for secrets, but truncating required state would be omission.
@@ -1251,6 +1252,9 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
       : {}),
     ...(current.scaleWaiverReference !== undefined
       ? { scaleWaiverReference: sanitizeLedgerValue(current.scaleWaiverReference) }
+      : {}),
+    ...(current.interfaceEvidencePolicy !== undefined
+      ? { interfaceEvidencePolicy: current.interfaceEvidencePolicy }
       : {}),
   };
   // Recheck after redaction and retain all required keys. This protects
@@ -1299,7 +1303,19 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
     verdict: current.scaleReview.verdict,
     findingCount: current.scaleReview.findings.length,
   };
+  const interfaceEvidenceSummary = current.interfaceEvidencePolicy === undefined ? undefined : {
+    policy: current.interfaceEvidencePolicy,
+    checkCount: current.acceptanceCheckSpecs?.length ?? 0,
+    decisionCount: current.applicabilityDecisions?.length ?? 0,
+    evidenceCount: current.interfaceEvidence?.length ?? 0,
+    passed: current.interfaceEvidence?.filter((evidence) => evidence.result === "passed").length ?? 0,
+    failed: current.interfaceEvidence?.filter((evidence) => evidence.result === "failed").length ?? 0,
+    blocked: current.interfaceEvidence?.filter((evidence) => evidence.result === "blocked").length ?? 0,
+  };
   const optional: Array<[string, unknown]> = [
+    ...(interfaceEvidenceSummary !== undefined
+      ? [["interfaceEvidence", sanitizeLedgerValue(interfaceEvidenceSummary)] as [string, unknown]]
+      : []),
     ...(phase3AdmissionSummary !== undefined
       ? [["scaleAdmission", sanitizeLedgerValue(phase3AdmissionSummary)] as [string, unknown]]
       : []),
@@ -1396,10 +1412,21 @@ export function createCompletionCapsule(record: WorkflowRecord, createdAt: strin
     ...(current.scaleVerdict !== undefined ? { scaleVerdict: sanitizeLedgerValue(current.scaleVerdict) as string } : {}),
     ...(current.scaleWaiverReference !== undefined ? { scaleWaiverReference: sanitizeLedgerValue(current.scaleWaiverReference) as string } : {}),
     ...(current.changedScopeSummary !== undefined ? { changedScopeSummary: sanitizeLedgerValue(current.changedScopeSummary) as string } : {}),
+    ...(current.interfaceEvidencePolicy !== undefined ? { interfaceEvidencePolicy: current.interfaceEvidencePolicy } : {}),
+    ...(current.interfaceEvidencePolicy !== undefined ? { interfaceEvidenceSummary: {
+      checkCount: current.acceptanceCheckSpecs?.length ?? 0,
+      decisionCount: current.applicabilityDecisions?.length ?? 0,
+      evidenceCount: current.interfaceEvidence?.length ?? 0,
+      passed: current.interfaceEvidence?.filter((evidence) => evidence.result === "passed").length ?? 0,
+      failed: current.interfaceEvidence?.filter((evidence) => evidence.result === "failed").length ?? 0,
+      blocked: current.interfaceEvidence?.filter((evidence) => evidence.result === "blocked").length ?? 0,
+    } } : {}),
   };
   // Remove optional/prose fields in a fixed order until the bounded capsule
   // fits. Required terminal facts remain, and accepted is only canonical.
   const optionalKeys: Array<keyof CompletionCapsule> = [
+    "interfaceEvidenceSummary",
+    "interfaceEvidencePolicy",
     "changedScopeSummary",
     "scaleWaiverReference",
     "scaleVerdict",

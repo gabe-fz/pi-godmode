@@ -17,7 +17,8 @@ import { statusLine, boundedStatus } from "./status.ts";
 import { SubagentsClient } from "./subagents-client.ts";
 import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.ts";
 import { verifyInspectionArtifacts, cleanupInspectionArtifacts, cleanupSupersededInspection } from "./inspection-artifacts.ts";
-import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission } from "./types.ts";
+import { cleanupEvidenceArtifacts } from "./evidence.ts";
+import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission, BoundedEvidenceReference } from "./types.ts";
 import type { ChecklistView } from "./workflow-state.ts";
 
 export const PRIMARY_GUIDANCE_VERSION = 5;
@@ -52,6 +53,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   // shutdown listener runs; retain only the latest trusted inspection pointer
   // so temporary artifacts are still removed without retaining payloads.
   let inspectionForCleanup: WorkflowRecord["primaryInspection"] | undefined;
+  let evidenceForCleanup: BoundedEvidenceReference[] = [];
   let workflowBlockedReason: string | undefined;
 
   const requireContext = (): ExtensionContext => {
@@ -85,6 +87,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     cleanupSupersededInspection(previousInspection, persistedInspection);
     workflowRecord = persisted.snapshot.record;
     if (persistedInspection) inspectionForCleanup = persistedInspection;
+    evidenceForCleanup = (persisted.snapshot.record.interfaceEvidence ?? []).flatMap((record) => record.artifactReferences.filter((value): value is BoundedEvidenceReference => typeof value === "object" && value !== null));
     workflowView = deriveChecklistView(persisted.snapshot.record);
     return persisted.snapshot.record;
   };
@@ -93,10 +96,15 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     const current = workflowRecord;
     if (!current) throw new Error("Workflow transition requires an active canonical record.");
     const timestamp = new Date().toISOString();
+    const matrixArtifacts = to === "hand-running"
+      ? (current.interfaceEvidence ?? []).flatMap((record) => record.artifactReferences.filter((value): value is BoundedEvidenceReference => typeof value === "object" && value !== null && typeof value.source === "string"))
+      : [];
     const next = applyPhaseTransition(current, { to, actor: "Primary", timestamp, reason, reference });
     // appendWorkflowSnapshot verifies the exact new active leaf before this
     // closure changes either in-memory projection or record state.
-    return persistWorkflowRecord(next, timestamp);
+    const persisted = persistWorkflowRecord(next, timestamp);
+    if (matrixArtifacts.length > 0) cleanupEvidenceArtifacts(matrixArtifacts);
+    return persisted;
   };
 
   const mode = new GodmodeMode({
@@ -226,6 +234,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     setWorkflowRecord(record) {
       workflowRecord = record;
       if (record?.primaryInspection) inspectionForCleanup = record.primaryInspection;
+      evidenceForCleanup = (record?.interfaceEvidence ?? []).flatMap((entry) => entry.artifactReferences.filter((value): value is BoundedEvidenceReference => typeof value === "object" && value !== null));
       workflowView = record ? deriveChecklistView(record) : undefined;
       refreshWorkflowStatus(requireContext());
     },
@@ -311,10 +320,13 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     const inspection = inspectionForCleanup;
+    const evidence = evidenceForCleanup;
     await mode.shutdown();
     if (inspection) cleanupInspectionArtifacts(inspection);
+    if (evidence.length > 0) cleanupEvidenceArtifacts(evidence);
     workflowView = undefined;
     workflowRecord = undefined;
+    evidenceForCleanup = [];
     workflowBlockedReason = undefined;
     currentCtx = undefined;
   });

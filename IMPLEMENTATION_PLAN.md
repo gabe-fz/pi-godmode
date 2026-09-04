@@ -34,7 +34,7 @@ Completed and pushed to `main`:
 - `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
 - Independent validation at the prior checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Phase 3 Primary inspection and mandatory Scale gates are implemented in the current working tree. The normal-runtime Primary workflow controller now records complete inspection evidence, binds Scale reviews to the exact latest completed run, enforces bounded waivers, and invalidates stale gate records through remediation before a fresh review. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-10/FR-11 and Phase 4 interface-evidence automation remain explicitly future work.
+Phase 3 Primary inspection and mandatory Scale gates plus the Phase 4 interface-matched evidence matrix are implemented in the current working tree. The normal-runtime Primary workflow controller records complete inspection evidence, binds Scale reviews to the exact latest completed run, records all-surface applicability and Primary-observed artifacts, enforces bounded waivers, and invalidates stale gate records through remediation before fresh inspection and evidence. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-10/FR-11 remain explicitly future work.
 
 ### Phase 0 — Baseline and contract fixtures
 
@@ -74,12 +74,12 @@ Phase 3 Primary inspection and mandatory Scale gates are implemented in the curr
 
 ### Phase 4 — Interface-matched evidence matrix
 
-- [ ] Implement evidence records and applicability decisions for browser UI via surf-cli, TUI via deterministic PTY capture, APIs via real controlled requests, CLIs via executable invocation, libraries via public consumer, persistence/migrations via disposable fixture, build/config, and docs.
-- [ ] Connect each evidence record to numbered FRs, bounded artifact references, provenance, actor, result, redaction, and retention metadata.
-- [ ] Treat blocked/unavailable checks as visible risk; prevent unit-only substitution where the specified interface is user-facing.
-- [ ] Primary authors red schema/integration tests that intentionally fail on missing surface evidence, unredacted secrets, unbounded output, stale artifacts, and mismatched interface checks. Observe failures before Hand.
-- [ ] Validation/evidence: controlled matrix for each fixture surface, sanitized artifacts, reproducibility notes, and deliberate failure/blocked cases.
-- **Exit:** FR-8 is evidenced and evidence can be reviewed without exposing secrets or flooding context.
+- [x] Implement bounded interface evidence records and applicability decisions for the eight canonical surfaces (browser UI, TUI, API, CLI, library, persistence/migrations, build/configuration, and documentation).
+- [x] Connect each evidence record to numbered FRs, bounded imported artifact descriptors, Primary provenance, result, redaction, and retention metadata.
+- [x] Treat blocked/failed checks as visible but unsatisfying; reject unit-only substitution metadata and require interface-matched checks for the opted-in gate.
+- [x] Add the Primary-only `record-evidence`/`record-evidence-matrix` action. It records observations and imports only explicit passive artifacts; it never executes commands or network/browser activity.
+- [x] Validation: Phase 4 contract coverage includes missing, stale, secret-bearing, and failed/blocked matrix records; importer limits, symlink/escape, expiry/tamper, and cleanup are bounded.
+- **Exit:** FR-8 interface evidence is structurally gated and artifacts can be reviewed through descriptors without exposing raw files to the ledger/model context.
 
 ### Phase 5 — Doctor read-only assessment
 
