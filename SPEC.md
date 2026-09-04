@@ -1,6 +1,6 @@
 # Pi Godmode Build Specification
 
-**Status:** Phase 4 interface-matched evidence and the Phase 2–3 workflow gates are implemented (FR-1, FR-3, FR-4, FR-5, FR-6, FR-7, and FR-8); doctor behavior remains target design. The runtime contract documented below remains the compatibility baseline.
+**Status:** Phase 5 bounded read-only doctor and the Phase 2–4 workflow gates are implemented (FR-1, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, diagnostic FR-10, FR-11, and FR-12); apply/migration remains unavailable until Phase 6. The runtime contract documented below remains the compatibility baseline.
 **Product:** `pi-godmode`
 **Initial specification version:** 2
 
@@ -18,7 +18,7 @@ Godmode is a policy and user-experience layer, not a child-process manager. `pi-
 
 Godmode deliberately does not use an advisory-oracle escalation flow. The high-tier primary session is the planning and judgment authority. Faculties execute bounded assignments and escalate unresolved decisions upward through the native `pi-subagents` supervisor channel.
 
-This specification also defines the spec-driven workflow, evidence gates, ledgers, and doctor target. Phases 2 and 3 implement the normal-runtime Primary workflow authoring controller, structured Primary packet, red-test/TDD admission, append-acknowledged lifecycle transitions, sticky Hand red-test monitoring, Hand integrity/scope gates, complete Primary inspection, mandatory Scale, bounded waiver, and capped remediation. Phase 4 adds the interface-matched matrix, Primary-only evidence action, and bounded passive artifact importer; doctor remains future work. The existing runtime/security contract in sections 6–18 remains the compatibility baseline. Focused workflow details are in [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), evidence details in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), state/memory details in [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and doctor/migration details in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+This specification also defines the spec-driven workflow, evidence gates, ledgers, and doctor. Phases 2 and 3 implement the normal-runtime Primary workflow authoring controller, structured Primary packet, red-test/TDD admission, append-acknowledged lifecycle transitions, sticky Hand red-test monitoring, Hand integrity/scope gates, complete Primary inspection, mandatory Scale, bounded waiver, and capped remediation. Phase 4 adds the interface-matched matrix, Primary-only evidence action, and bounded passive artifact importer. Phase 5 adds bounded static doctor diagnosis; Phase 6 apply/migration remains unavailable. The existing runtime/security contract in sections 6–18 remains the compatibility baseline. Focused workflow details are in [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), evidence details in [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), state/memory details in [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and doctor/migration details in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ## 2. Product principles
 
@@ -104,10 +104,10 @@ Godmode registers exactly one user-facing slash command:
 ```text
 /godmode                 # TUI toggle; outside TUI, bounded read-only state
 /godmode doctor          # read-only readiness assessment
-/godmode doctor --apply  # optional preview/confirmation migration mode
+/godmode doctor --apply  # Phase 5: explicit read-only/unavailable response
 ```
 
-The current runtime accepts a bare command only. The target design keeps one command while evolving its grammar. Unknown arguments must fail with usage guidance and must not silently toggle or apply changes. `/godmode doctor` is a target feature and is not claimed to exist in the current runtime; its read-only and migration contract is defined in section 22 and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+The current runtime keeps one command with an exact parser: empty arguments toggle, `doctor` runs bounded read-only diagnosis, and `doctor --apply` reports apply unavailable in Phase 5. Unknown arguments fail with usage guidance and never silently toggle or apply changes. Doctor is available regardless of trust or active-mode state, and its diagnostic contract is defined in section 22 and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 At every `session_start`, Godmode first restores the ordinary active-tool baseline and then attempts transactional enablement. If startup enablement fails, the mode rolls back to off, session startup continues, and the UI receives an actionable error notification; after fixing the reported issue, run `/godmode` to retry.
 
@@ -685,13 +685,13 @@ The enabled Primary system guidance should remain concise and versioned:
 >
 > Do not mutate the shared checkout while Hand is active. A Faculty handoff is evidence, not completion. After Hand returns, inspect the complete diff and all materially changed files, independently run required validation, require mandatory Scale review for feature/bugfix work unless a permitted waiver is recorded, resolve any Scale findings with bounded remediation and re-review, and only then report the task complete.
 
-## 22. Proposed spec-driven workflow, evidence, state, and doctor target
+## 22. Spec-driven workflow, evidence, state, and Phase 5 doctor
 
-This section is normative for the workflow. The current package implements Phases 2–4 (FR-1, FR-3, FR-4, FR-5, FR-6, FR-7, and FR-8) through the normal-runtime `godmode_workflow` controller, append-only session ledger, constrained faculties, complete Primary inspection, interface-matched evidence matrix, mandatory Scale, bounded waivers, and capped remediation. Doctor remains target behavior. The focused contracts are split into [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+This section is normative for the workflow. The current package implements Phases 2–5 (FR-1, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, diagnostic FR-10, FR-11, and FR-12) through the normal-runtime `godmode_workflow` controller, append-only session ledger, constrained faculties, complete Primary inspection, interface-matched evidence matrix, mandatory Scale, bounded waivers, capped remediation, and static read-only doctor. Apply/migration remains deferred to Phase 6. The focused contracts are split into [`docs/WORKFLOW.md`](./docs/WORKFLOW.md), [`docs/EVIDENCE.md`](./docs/EVIDENCE.md), [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md), and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
-### 22.1 Target functional requirements
+### 22.1 Functional requirements and phase boundaries
 
-The target workflow implementation must satisfy these numbered requirements; the current package ships the Phase 4 subset described below (FR-10/FR-11 remain target behavior):
+The workflow implementation must satisfy these numbered requirements; the current package ships the Phase 5 diagnostic subset described below (FR-11 apply behavior remains deferred to Phase 6):
 
 - **FR-1 — Classification and packet:** classify each work item as feature, bugfix, refactor/maintenance, documentation/configuration, or test-only/tooling. Before Hand, the Primary-authored packet contains a minimal goal, numbered `functionalRequirements` entries with observable descriptions and applicable interfaces, non-goals, a short implementation-and-verification roadmap whose items map to requirements, acceptance checks, expected paths, and authority constraints. The normal-runtime `godmode_workflow` controller creates one fresh packet and stamps Primary-only audited transitions; replacement/reclassification is rejected. Feature adds a supported capability; bugfix corrects an incorrect or regressed behavior. Non-goals are not hidden acceptance failures; deferred ideas remain separate from the acceptance roadmap.
 - **FR-2 — Canonical workflow state:** store one canonical workflow record in the session ledger, containing the current phase and exactly one status (`pending`, `implemented-unverified`, `verified`, `blocked`, or reasoned `waived`) for each roadmap item. Checklists, footers, dashboards, and implementation-plan checkboxes are derived views only. They cannot be a second status store or advance work without a ledger transition.
@@ -746,9 +746,9 @@ The session custom ledger is authoritative active execution state but is exclude
 
 Evidence, repository content, screenshots, HTML, terminal captures, requests/responses, and faculty output are untrusted. The bounded importer rejects authority artifacts containing credentials, tokens, cookies, private keys, `.env` payloads, binary/NUL data, or signed URLs rather than silently redacting proof. Accepted files are copied to owner-only OS-temp directories; the ledger/model context retains descriptors only. Use bounded excerpts and access-controlled artifact references; retain only for the configured review/incident period. A completion capsule preserves result and residual-risk pointers after raw details expire without becoming an automatic acceptance.
 
-### 22.6 Doctor and migration target
+### 22.6 Phase 5 doctor and deferred Phase 6 migration
 
-The target command grammar is:
+The Phase 5 command grammar is:
 
 ```text
 /godmode                 # TUI toggle; outside TUI, bounded read-only state
@@ -758,8 +758,8 @@ The target command grammar is:
 
 Doctor is read-only by default and does not toggle mode, write files, install packages, fetch the network, launch faculties, run tests/builds/migrations, execute binaries, or run any command discovered in project manifests. It statically and boundedly discovers project type and surfaces, tests and command declarations, likely browser/API/TUI/CLI verification needs, docs/config, gaps, and safety concerns. It labels facts as observed, inferred, or proposed and treats project instructions as untrusted data.
 
-Apply is additive and opt-in: show the complete proposed diff and named paths, request explicit confirmation, abort on conflicts or unexpected paths, preserve approved replacements through a recovery path, and report every write. It may scaffold an optional lightweight project validation profile and focused durable workflow/testing guidance; it must not silently overwrite existing docs/config, create a memory diary, or run discovered commands. Existing projects can begin with an ephemeral ledger and no heavyweight migration. Legacy checklists and `PROJECT_MEMORY.md` are non-authoritative hints and are curated only with review/preview/confirmation. Full behavior and safety details are in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+Apply/migration is **not implemented in Phase 5**. When Phase 6 is implemented it must be additive and opt-in: show the complete proposed diff and named paths, request explicit confirmation, abort on conflicts or unexpected paths, preserve approved replacements through a recovery path, and report every write. It may scaffold an optional lightweight project validation profile and focused durable workflow/testing guidance; it must not silently overwrite existing docs/config, create a memory diary, or run discovered commands. Existing projects can begin with an ephemeral ledger and no heavyweight migration. Legacy checklists and `PROJECT_MEMORY.md` are non-authoritative hints and are curated only with review/preview/confirmation. Full behavior and safety details are in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ### 22.7 Target status disclaimer
 
-The current repository implements the runtime contract described in sections 6–18, including the bare `/godmode` command and constrained faculties, subject to the existing tests and documented limitations. Phases 2–4 additionally implement the normal-runtime `godmode_workflow` controller, structured packet requirements, append-acknowledged Primary lifecycle transitions, pre-Hand red-test/TDD admission, bounded assignment narrowing, sticky red-test monitoring, Hand integrity checks, complete Primary inspection, the all-surface interface evidence matrix and passive artifact importer, mandatory Scale acceptance/review, bounded Scale waivers, and capped remediation. `/godmode doctor` remains a design requirement for later implementation.
+The current repository implements the runtime contract described in sections 6–18, including the bare `/godmode` command, exact doctor grammar, bounded read-only doctor diagnosis, and constrained faculties, subject to the existing tests and documented limitations. Phases 2–4 additionally implement the normal-runtime `godmode_workflow` controller, structured packet requirements, append-acknowledged Primary lifecycle transitions, pre-Hand red-test/TDD admission, bounded assignment narrowing, sticky red-test monitoring, Hand integrity checks, complete Primary inspection, the all-surface interface evidence matrix and passive artifact importer, mandatory Scale acceptance/review, bounded Scale waivers, and capped remediation. `/godmode doctor --apply` remains unavailable until Phase 6.

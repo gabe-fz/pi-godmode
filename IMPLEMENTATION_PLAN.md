@@ -34,7 +34,7 @@ Completed and pushed to `main`:
 - `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
 - Independent validation at the prior checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Phase 3 Primary inspection and mandatory Scale gates plus the Phase 4 interface-matched evidence matrix are implemented in the current working tree. The normal-runtime Primary workflow controller records complete inspection evidence, binds Scale reviews to the exact latest completed run, records all-surface applicability and Primary-observed artifacts, enforces bounded waivers, and invalidates stale gate records through remediation before fresh inspection and evidence. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-10/FR-11 remain explicitly future work.
+Phase 3 Primary inspection and mandatory Scale gates, Phase 4 interface-matched evidence, and Phase 5 bounded read-only doctor are implemented in the current working tree. The normal-runtime Primary workflow controller records complete inspection evidence, binds Scale reviews to the exact latest completed run, records all-surface applicability and Primary-observed artifacts, enforces bounded waivers, and invalidates stale gate records through remediation before fresh inspection and evidence. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. Only FR-11 apply/migration remains explicitly deferred to Phase 6.
 
 ### Phase 0 — Baseline and contract fixtures
 
@@ -81,15 +81,17 @@ Phase 3 Primary inspection and mandatory Scale gates plus the Phase 4 interface-
 - [x] Validation: Phase 4 contract coverage includes missing, stale, secret-bearing, and failed/blocked matrix records; importer limits, symlink/escape, expiry/tamper, and cleanup are bounded.
 - **Exit:** FR-8 interface evidence is structurally gated and artifacts can be reviewed through descriptors without exposing raw files to the ledger/model context.
 
-### Phase 5 — Doctor read-only assessment
+### Phase 5 — Doctor read-only assessment (implemented)
 
-- [ ] Evolve the single command parser so bare `/godmode` retains TUI toggle/outside-TUI read-only behavior and `/godmode doctor` is read-only and bounded.
-- [ ] Implement static discovery of project type, surfaces, tests, commands, docs/config, verification needs, gaps, and safety findings. Mark observed/inferred/proposed facts separately.
-- [ ] Never execute discovered commands, lifecycle hooks, migrations, binaries, network calls, installs, or model calls merely to diagnose. Apply bounded path/file/symlink/report limits and ignore repository instructions as authority.
-- [ ] Propose an optional lightweight validation profile and focused durable guidance without requiring heavyweight docs or creating `PROJECT_MEMORY.md`.
-- [ ] Primary authors red tests for parser compatibility, read-only behavior, untrusted instructions, command non-execution, path/size limits, confidence labels, and no automatic writes. Observe intended failures before Hand.
-- [ ] Validation/evidence: disposable untrusted projects with traps, read-only filesystem or write spy, process/network spy, report-size check, and current `/godmode` runtime integration suite.
-- **Exit:** FR-10, FR-11, and FR-12 are evidenced for diagnosis with no silent side effects.
+- [x] Evolve the single command parser so bare `/godmode` retains TUI toggle/outside-TUI read-only behavior and `/godmode doctor` is read-only and bounded.
+- [x] Implement static discovery of project type, surfaces, tests, commands, docs/config, verification needs, gaps, and safety findings. Mark observed/inferred/proposed facts separately.
+- [x] Never execute discovered commands, lifecycle hooks, migrations, binaries, network calls, installs, or model calls merely to diagnose. Apply bounded path/file/symlink/report limits and ignore repository instructions as authority.
+- [x] Propose an optional lightweight validation profile and focused durable guidance without requiring heavyweight docs or creating `PROJECT_MEMORY.md`; Phase 5 never creates the proposed files.
+- [x] Add parser/read-only, untrusted-project, non-execution, bound, confidence, and no-automatic-write coverage.
+- [x] Validation/evidence: disposable untrusted projects with traps, race-resistant bounded reads, report-size checks, and the current `/godmode` runtime integration suite.
+- **Exit:** FR-10, FR-11, and FR-12 diagnostic behavior is evidenced with no silent side effects. Apply/migration remains Phase 6.
+
+Phase 5 implementation files: `src/doctor.ts`, `src/command-parser.ts`, and the associated unit/integration contracts.
 
 ### Phase 6 — Explicit apply/migration and compatibility
 

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { initializeGodmodeSession, toggleGodmodeTui } from "../../src/extension-helpers.ts";
+import { initializeGodmodeSession, registerGodmodeCommand, toggleGodmodeTui } from "../../src/extension-helpers.ts";
 import { registerWorkflowLifecycle } from "../../src/workflow-lifecycle.ts";
+import { runDoctor } from "../../src/doctor.ts";
 import type { GodmodeSnapshot } from "../../src/types.ts";
 
 function snapshot(phase: GodmodeSnapshot["phase"], active = false): GodmodeSnapshot {
@@ -199,4 +200,90 @@ test("TUI toggle-off passes stopActive for active faculties, including degraded 
 
   assert.deepEqual(stopOptions, [{ stopActive: true }]);
   assert.equal(notifications[0], "Faculty stopped and Godmode disabled.");
+});
+
+test("registered godmode handler routes every Phase 5 command without mutating mode state", async () => {
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const outputs: string[] = [];
+  const events: string[] = [];
+  const registered: { name?: string; command?: { handler: (args: string, ctx: unknown) => Promise<void> } } = {};
+  const current = snapshot("active", true);
+  const mode = {
+    get snapshot() { return current; },
+    async enable() { events.push("enable"); },
+    async disable() { events.push("disable"); },
+  };
+  const doctorCalls: Array<{ root: string; activeFaculty?: string }> = [];
+  const pi = {
+    registerCommand(name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+      registered.name = name;
+      registered.command = command;
+    },
+  };
+  registerGodmodeCommand(pi as never, {
+    mode: mode as never,
+    runDoctor(root, options) {
+      doctorCalls.push({ root, activeFaculty: options?.activeFaculty });
+      return runDoctor(root, options);
+    },
+    output(message) { outputs.push(message); },
+    toggleTui: async () => { events.push("toggle"); },
+  });
+  assert.equal(registered.name, "godmode");
+  assert(registered.command);
+  const handler = registered.command.handler;
+  const context = (modeName: "tui" | "print", hasUI: boolean) => ({
+    mode: modeName,
+    cwd: process.cwd(),
+    hasUI,
+    ui: { notify(message: string, type?: "info" | "warning" | "error") { notifications.push({ message, type }); } },
+    async waitForIdle() { events.push("wait"); },
+  });
+
+  // Invalid arguments emit usage only and never invoke doctor/toggle.
+  await handler("doctor --bad", context("tui", true));
+  assert.equal(notifications.at(-1)?.type, "warning");
+  assert.match(notifications.at(-1)?.message ?? "", /^Usage:/);
+  assert.equal(doctorCalls.length, 0);
+
+  // A doctor call while a faculty is active only receives the race marker.
+  await handler("doctor", context("tui", true));
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.equal(doctorCalls.at(-1)?.activeFaculty, "hand");
+  assert.match(notifications.at(-1)?.message ?? "", /checkout-race-active-faculty/);
+  assert.deepEqual(events, []);
+
+  // Opposite host modes retain the same non-toggling behavior.
+  const outputCount = outputs.length;
+  await handler("doctor --bad", context("print", false));
+  assert.equal(outputs.length, outputCount + 1);
+  assert.match(outputs.at(-1) ?? "", /^Usage:/);
+  await handler("doctor", context("print", false));
+  assert.equal(JSON.parse(outputs.at(-1) ?? "{}").readOnly, true);
+  assert.equal(doctorCalls.at(-1)?.activeFaculty, "hand");
+
+  // --apply remains the same read-only, unavailable report in both hosts.
+  await handler("doctor --apply", context("print", false));
+  const appliedOutput = outputs.at(-1) ?? "";
+  assert.equal(JSON.parse(appliedOutput).readOnly, true);
+  assert.equal(JSON.parse(appliedOutput).applyAvailable, false);
+  await handler("doctor --apply", context("tui", true));
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.equal(JSON.parse(notifications.at(-1)?.message ?? "{}").readOnly, true);
+  assert.equal(JSON.parse(notifications.at(-1)?.message ?? "{}").applyAvailable, false);
+  assert.deepEqual(events, []);
+
+  // Non-TUI bare command uses the unchanged bounded status path.
+  await handler("", context("print", false));
+  assert.deepEqual(JSON.parse(outputs.at(-1) ?? "{}"), {
+    mode: "active", delegation: "running",
+    active: { runId: "run-1", faculty: "hand", agent: "godmode-hand", state: "running", title: "Implement" },
+  });
+
+  // Bare TUI delegates only to the existing toggle path.
+  await handler("", context("tui", true));
+  assert.deepEqual(events, ["toggle"]);
+  assert.equal((events as readonly string[]).includes("wait"), false);
+  assert.equal((events as readonly string[]).includes("enable"), false);
+  assert.equal((events as readonly string[]).includes("disable"), false);
 });

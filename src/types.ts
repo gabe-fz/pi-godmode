@@ -176,6 +176,146 @@ export const INTERFACE_METHOD_BY_SURFACE = {
   documentation: "rendered-doc-validation",
 } as const satisfies Record<InterfaceSurface, string>;
 export type InterfaceEvidenceMethod = (typeof INTERFACE_METHOD_BY_SURFACE)[InterfaceSurface];
+
+/** Static, read-only Phase 5 doctor classifications. */
+export type DoctorStatus = "ready" | "partial" | "blocked";
+export type DoctorBasis = "observed" | "inferred" | "proposed";
+export type DoctorConfidence = "high" | "medium" | "low";
+
+export interface DoctorLimits {
+  maxDepth: number;
+  maxScannedEntries: number;
+  maxFileBytes: number;
+  maxAggregateReadBytes: number;
+  maxSafetyFindings: number;
+  maxCommands: number;
+  maxTests: number;
+  maxDocsConfig: number;
+  maxSurfaces: number;
+  maxGaps: number;
+  maxProposals: number;
+  maxFieldBytes: number;
+  maxReportBytes: number;
+  scannedEntries: number;
+  aggregateReadBytes: number;
+  truncated: boolean;
+  truncationReasons: string[];
+}
+
+export interface DoctorProjectType {
+  type: string;
+  evidencePaths: string[];
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorSurface {
+  surface: InterfaceSurface;
+  evidencePaths: string[];
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorTestCandidate {
+  path: string;
+  kind: string;
+  evidencePaths: string[];
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorCommandCandidate {
+  command: string;
+  sourcePath: string;
+  kind: string;
+  requiresExplicitApproval: true;
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorDocConfigItem {
+  path: string;
+  category: string;
+  evidencePaths: string[];
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorVerificationNeed {
+  surface: InterfaceSurface;
+  method: InterfaceEvidenceMethod;
+  reason: string;
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorFinding {
+  category: string;
+  path?: string;
+  detail?: string;
+  basis: DoctorBasis;
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorProposal {
+  path: string;
+  kind: "validation-profile" | "workflow-guidance";
+  rationale: string;
+  basis: "proposed";
+  confidence: DoctorConfidence;
+}
+
+export interface DoctorRootIdentity {
+  path: string;
+  identity: string;
+  basis: "observed";
+  confidence: DoctorConfidence;
+}
+
+/** Counts retain category cardinality when a report is compacted for its
+ * complete-object serialization bound. */
+export interface DoctorReportSummary {
+  projectTypes: number;
+  surfaces: number;
+  testCandidates: number;
+  /** Compatibility alias used by the compact rendered summary. */
+  tests?: number;
+  commands: number;
+  docsConfig: number;
+  verificationNeeds: number;
+  gaps: number;
+  safetyFindings: number;
+  proposals: number;
+}
+
+export interface DoctorReport {
+  schema: "godmode-doctor";
+  schemaVersion: 1;
+  version: 1;
+  root: DoctorRootIdentity;
+  /** Compatibility spelling for callers that use the requirement's wording. */
+  rootIdentity: DoctorRootIdentity;
+  status: DoctorStatus;
+  readOnly: true;
+  applyAvailable: false;
+  limits: DoctorLimits;
+  /** Returned reports include this; optional keeps renderer input backward-compatible. */
+  summary?: DoctorReportSummary;
+  projectTypes: DoctorProjectType[];
+  surfaces: DoctorSurface[];
+  testCandidates: DoctorTestCandidate[];
+  commands: DoctorCommandCandidate[];
+  /** Compatibility spelling retained as a descriptive alias. */
+  inertCommandCandidates: DoctorCommandCandidate[];
+  docsConfig: DoctorDocConfigItem[];
+  verificationNeeds: DoctorVerificationNeed[];
+  gaps: DoctorFinding[];
+  safetyFindings: DoctorFinding[];
+  proposals: DoctorProposal[];
+  /** Bounded deterministic presentation; it is never interpreted as input. */
+  rendered: string;
+}
+
 /** Compatibility aliases used by evidence-focused callers. */
 export const SURFACES = INTERFACE_SURFACES;
 export const SURFACE_METHODS = INTERFACE_METHOD_BY_SURFACE;

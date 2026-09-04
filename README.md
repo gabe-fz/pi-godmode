@@ -8,15 +8,15 @@ Godmode exposes three constrained faculties:
 - **Hand** — bounded implementation; and
 - **Scale** — independent read-only review.
 
-The Primary remains the sole authority for intent, decisions, orchestration, review, acceptance, and user communication. The workflow described in the linked design documents is a **proposed target workflow**; this documentation-only change does not implement that workflow or the doctor feature.
+The Primary remains the sole authority for intent, decisions, orchestration, review, acceptance, and user communication. Phase 5 adds a bounded, read-only doctor assessment; workflow apply/migration remains unavailable until Phase 6.
 
 ## Documentation map
 
-- [`SPEC.md`](./SPEC.md) — normative product and runtime/security contract, plus the target workflow requirements.
+- [`SPEC.md`](./SPEC.md) — normative product/runtime-security contract, implemented workflow requirements, and deferred Phase 6 apply boundary.
 - [`docs/WORKFLOW.md`](./docs/WORKFLOW.md) — spec-driven TDD, evidence gates, mandatory Scale review, remediation, and acceptance.
 - [`docs/EVIDENCE.md`](./docs/EVIDENCE.md) — interface-matched evidence expectations and evidence security, redaction, and retention.
 - [`docs/STATE_AND_MEMORY.md`](./docs/STATE_AND_MEMORY.md) — canonical workflow state, session ledgers, branch snapshots, and token-budget rules.
-- [`docs/DOCTOR.md`](./docs/DOCTOR.md) — proposed read-only doctor assessment, safe migration, and compatibility guidance.
+- [`docs/DOCTOR.md`](./docs/DOCTOR.md) — Phase 5 read-only doctor assessment and deferred Phase 6 migration guidance.
 - [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — temporary ordered plan for implementing the target design in a later session; delete it when its criterion is met.
 
 ## Install
@@ -57,7 +57,7 @@ There is one Godmode command. In the TUI, bare `/godmode` toggles the mode; outs
 
 While enabled, arbitrary `subagent` and `subagent_wait` surfaces are replaced by `godmode_delegate` and `godmode_control`. Only one faculty may be active. Eye and Scale are read-only; Hand is the only mutation-capable faculty, and Primary mutation is guarded while Hand owns the shared checkout. Faculty runs complete asynchronously through pi-subagents. A handoff is evidence, not acceptance.
 
-`/godmode doctor` is a **target feature**, not a command claimed to exist today. Its proposed read-only assessment and explicit preview/confirmation migration mode are specified in [`docs/DOCTOR.md`](./docs/DOCTOR.md).
+`/godmode doctor` performs a bounded synchronous static assessment in every host mode. It never toggles, waits, delegates, executes discovered commands, accesses the network, or writes project files. `/godmode doctor --apply` is explicitly parsed but reports read-only/unavailable in Phase 5; migration and scaffolding are deferred to Phase 6. See [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
 ## Trust boundary
 
@@ -71,4 +71,4 @@ npm run typecheck
 npm test
 ```
 
-The executable runtime and security contract remain in [`SPEC.md`](./SPEC.md); the target workflow is deliberately marked as future work.
+The executable runtime and security contract remain in [`SPEC.md`](./SPEC.md); Phase 5 diagnosis is implemented, while only the explicit apply/migration portion remains future Phase 6 work.

@@ -5,7 +5,7 @@ import { ActiveToolLease } from "./active-tools.ts";
 import { registerFaculties } from "./agents.ts";
 import { DEFAULT_CEILING_REGISTRAR } from "./ceiling.ts";
 import { loadConfig } from "./config.ts";
-import { initializeGodmodeSession, toggleGodmodeTui } from "./extension-helpers.ts";
+import { initializeGodmodeSession, registerGodmodeCommand } from "./extension-helpers.ts";
 import { GodmodeMode } from "./mode.ts";
 import { ModelLease, type PiModel } from "./model-lease.ts";
 import { mutationGuard } from "./mutation-guard.ts";
@@ -13,11 +13,12 @@ import { preflightFaculties } from "./preflight.ts";
 import { registerWorkflowLifecycle } from "./workflow-lifecycle.ts";
 import { appendWorkflowSnapshot } from "./session-ledger.ts";
 import { applyPhaseTransition, deriveChecklistView } from "./workflow-state.ts";
-import { statusLine, boundedStatus } from "./status.ts";
+import { statusLine } from "./status.ts";
 import { SubagentsClient } from "./subagents-client.ts";
 import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.ts";
 import { verifyInspectionArtifacts, cleanupInspectionArtifacts, cleanupSupersededInspection } from "./inspection-artifacts.ts";
 import { cleanupEvidenceArtifacts } from "./evidence.ts";
+import { runDoctor } from "./doctor.ts";
 import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission, BoundedEvidenceReference } from "./types.ts";
 import type { ChecklistView } from "./workflow-state.ts";
 
@@ -270,19 +271,12 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     refreshWorkflowStatus(ctx);
   });
 
-  pi.registerCommand("godmode", {
-    description: "Toggle constrained Godmode orchestration",
-    handler: async (args, ctx) => {
-      currentCtx = ctx;
-      if (args.trim()) { ctx.ui.notify("Usage: /godmode", "warning"); return; }
-      if (ctx.mode !== "tui") {
-        const report = JSON.stringify(boundedStatus(mode.snapshot));
-        if (ctx.hasUI) ctx.ui.notify(report, "info");
-        else console.log(report);
-        return;
-      }
-      await toggleGodmodeTui(mode, ctx);
-    },
+  // The registered handler owns the exact /godmode doctor and
+  // /godmode doctor --apply (read-only) grammar alongside the legacy toggle.
+  registerGodmodeCommand(pi, {
+    mode,
+    runDoctor,
+    onContext: (ctx) => { currentCtx = ctx; },
   });
 
   pi.on("before_agent_start", (event) => {

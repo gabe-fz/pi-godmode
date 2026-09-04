@@ -1,6 +1,6 @@
 # Evidence and verification contract
 
-> **Design status:** Phase 4 interface-matched evidence is implemented. The controller records a bounded current matrix and imports only explicit passive artifacts; it does not execute commands, browsers, processes, or network requests.
+> **Design status:** Phase 4 interface-matched evidence is implemented and Phase 5 doctor can report its canonical verification needs. The controller and doctor record/import no executable project activity: doctor remains bounded static diagnosis and does not execute commands, browsers, processes, migrations, or network requests.
 
 Evidence proves an observable requirement through the interface a user or downstream consumer actually uses. A unit test of an internal helper is useful but is not a substitute when the contract is a browser, TUI, API, CLI, library, persistence, build/configuration, or documentation interface. The Primary chooses the smallest controlled check that matches each requirement and records its result in the session ledger.
 
