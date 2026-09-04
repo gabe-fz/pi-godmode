@@ -3,6 +3,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
+import { resolve } from "node:path";
 import type { GodmodeMode } from "./mode.ts";
 import {
   appendWorkflowSnapshot,
@@ -12,19 +13,39 @@ import {
 } from "./session-ledger.ts";
 import {
   applyPhaseTransition,
+  applyRoadmapTransition,
+  validatePrimaryInspection,
+  validateScaleReview,
+  validateScaleWaiver,
   validateTddWaiver,
   validateWorkflowRecord,
 } from "./workflow-state.ts";
 import { normalizeCheckoutPath, verifyRedTestIdentity } from "./faculties.ts";
+import { MAX_REMEDIATION_ATTEMPTS } from "./types.ts";
 import type {
   FunctionalRequirement,
   BoundedEvidenceReference,
   WorkflowClassification,
   WorkflowPhase,
   WorkflowRecord,
+  IndependentCheck,
+  PrimaryInspection,
+  ScaleFinding,
+  ScaleReview,
+  ScaleWaiver,
+  ScaleAdmission,
 } from "./types.ts";
 import { MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
 import { boundedStatus } from "./status.ts";
+import {
+  captureInspectionArtifacts,
+  inspectionArtifactContextPaths,
+  readInspectionArtifactForContext,
+  verifyInspectionArtifacts,
+  cleanupInspectionArtifacts,
+  cleanupInspectionArtifactDirectory,
+  type CapturedInspectionArtifacts,
+} from "./inspection-artifacts.ts";
 
 const StringList = Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 }));
 const ContextPathList = Type.Optional(Type.Array(
@@ -65,7 +86,9 @@ const ArtifactReferenceSchema = Type.Union([
     id: Type.String({ minLength: 1, maxLength: 256 }),
     kind: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
     label: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
-    source: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
+    source: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+    sha256: Type.Optional(Type.String({ minLength: 64, maxLength: 64 })),
+    bytes: Type.Optional(Type.Integer({ minimum: 0, maximum: 2 * 1024 * 1024 })),
     createdAt: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
     expiresAt: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
   }, { additionalProperties: false }),
@@ -102,9 +125,54 @@ const WaiverInputSchema = Type.Object({
   compensatingCheck: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
   compensatingEvidence: Type.Optional(ArtifactReferenceSchema),
 }, { additionalProperties: false });
+const IndependentCheckSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 256 }),
+  command: Type.String({ minLength: 1, maxLength: 8192 }),
+  result: StringEnum(["passed", "failed"] as const),
+  evidenceReference: ArtifactReferenceSchema,
+}, { additionalProperties: false });
+const OutOfScopeChangeSchema = Type.Object({
+  path: Type.String({ minLength: 1, maxLength: 4096 }),
+  disposition: Type.String({ minLength: 1, maxLength: 4096 }),
+}, { additionalProperties: false });
+const InspectionSchema = Type.Object({
+  // Artifact references and the checkout fingerprint are trusted runtime
+  // outputs. They are intentionally absent from model-facing input.
+  materiallyChangedPaths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 }),
+  outOfScopeChanges: Type.Array(OutOfScopeChangeSchema, { maxItems: 64 }),
+  independentChecks: Type.Array(IndependentCheckSchema, { minItems: 1, maxItems: 64 }),
+  residualRisks: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 }),
+}, { additionalProperties: false });
+const ScaleFindingSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 256 }),
+  classification: StringEnum(["blocker", "fix-now", "optional"] as const),
+  evidenceReference: ArtifactReferenceSchema,
+  summary: Type.String({ minLength: 1, maxLength: 8192 }),
+}, { additionalProperties: false });
+const CorrectionScopeSchema = Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 });
+const ScaleReviewSchema = Type.Object({
+  evidenceReferences: Type.Array(ArtifactReferenceSchema, { minItems: 1, maxItems: 64 }),
+  verdict: StringEnum(["pass", "changes-required"] as const),
+  findings: Type.Array(ScaleFindingSchema, { maxItems: 64 }),
+  residualUncertainty: Type.String({ minLength: 1, maxLength: 8192 }),
+  correctionScope: Type.Optional(CorrectionScopeSchema),
+  remediationPaths: Type.Optional(CorrectionScopeSchema),
+}, { additionalProperties: false });
+const ScaleWaiverInputSchema = Type.Object({
+  basis: StringEnum(["user-explicit", "policy"] as const),
+  scope: Type.Optional(Type.Union([
+    Type.String({ minLength: 1, maxLength: 4096 }),
+    Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 64 }),
+  ])),
+  reason: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  riskLimit: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  compensatingEvidence: Type.Optional(ArtifactReferenceSchema),
+  /** User input names a path only; policy contents become trusted internally. */
+  policyPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+}, { additionalProperties: false });
 
 export const WorkflowSchema = Type.Object({
-  action: StringEnum(["specify", "record-red", "waive-tdd"] as const),
+  action: StringEnum(["specify", "record-red", "waive-tdd", "record-inspection", "record-scale-review", "waive-scale", "accept"] as const),
   // Packet-authoring fields. The controller supplies all authority-bearing
   // metadata (author, phase, history, timestamps, and status).
   workItemId: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
@@ -138,6 +206,33 @@ export const WorkflowSchema = Type.Object({
   compensatingCheck: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
   compensatingEvidence: Type.Optional(ArtifactReferenceSchema),
   waiver: Type.Optional(WaiverInputSchema),
+  // Phase 3 Primary inspection gate. IDs, actors, timestamps, and authority
+  // transitions are supplied by the trusted controller, not the caller.
+  inspection: Type.Optional(InspectionSchema),
+  // statusReference, completeDiffReference, and diffFingerprint are trusted
+  // capture outputs and cannot be supplied by a model-facing caller.
+  materiallyChangedPaths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 64 })),
+  outOfScopeChanges: Type.Optional(Type.Array(OutOfScopeChangeSchema, { maxItems: 64 })),
+  independentChecks: Type.Optional(Type.Array(IndependentCheckSchema, { minItems: 1, maxItems: 64 })),
+  residualRisks: StringList,
+  settleRoadmapItemIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 64 })),
+  roadmapItemIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 64 })),
+  // Scale review fields intentionally omit runId/reviewer/freshContext.
+  scaleReview: Type.Optional(ScaleReviewSchema),
+  evidenceReferences: Type.Optional(Type.Array(ArtifactReferenceSchema, { minItems: 1, maxItems: 64 })),
+  verdict: Type.Optional(StringEnum(["pass", "changes-required"] as const)),
+  findings: Type.Optional(Type.Array(ScaleFindingSchema, { maxItems: 64 })),
+  residualUncertainty: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  // Changes-required reviews must explicitly name checkout-relative mutation
+  // paths; the controller verifies they are a subset of packet expectedPaths.
+  correctionScope: Type.Optional(CorrectionScopeSchema),
+  remediationPaths: Type.Optional(CorrectionScopeSchema),
+  // Scale-waiver fields intentionally omit item/actor/approver/date/id.
+  scaleWaiver: Type.Optional(ScaleWaiverInputSchema),
+  basis: Type.Optional(StringEnum(["user-explicit", "policy"] as const)),
+  riskLimit: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  // Model input may identify a policy path, but never a trusted proof string.
+  policyPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 }, { additionalProperties: false });
 
 export const ControlSchema = Type.Object({
@@ -156,7 +251,9 @@ const WORKFLOW_ACTOR_FIELDS = new Set([
   "actor", "author", "approver", "hash", "testContentHash", "timestamp", "observedAt",
   "phase", "history", "record", "evidence", "shell", "model", "cwd", "git", "acceptance",
   "packetAuthor", "redTestEvidence", "tddWaiver", "redTestReference", "tddWaiverReference",
-  "nextGate", "blockers", "residualRisks", "status", "to",
+  "runId", "reviewer", "freshContext", "admissionId", "diffFingerprint", "sha256", "hash",
+  "policyReference", "userMessageEntryId", "statusReference", "completeDiffReference", "source",
+  "nextGate", "blockers", "status", "to",
 ]);
 
 function workflowObject(value: unknown): value is Record<string, unknown> {
@@ -193,13 +290,21 @@ function workflowArtifact(value: unknown): string | BoundedEvidenceReference | u
   if (!workflowObject(value) || typeof value.id !== "string") throw new Error("Evidence reference must be a bounded ID or reference object.");
   const output: BoundedEvidenceReference = { id: workflowText(value.id, "artifactReference.id", 256) };
   for (const [key, entry] of Object.entries(value)) {
-    if (!["id", "kind", "label", "source", "createdAt", "expiresAt"].includes(key)) throw new Error("Evidence reference contains an unsupported field.");
+    if (!["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt"].includes(key)) throw new Error("Evidence reference contains an unsupported field.");
     if (entry === undefined || key === "id") continue;
-    const fieldValue = workflowText(entry, `artifactReference.${key}`, 1024);
+    if (key === "bytes") {
+      if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0 || entry > 2 * 1024 * 1024) throw new Error("artifactReference.bytes must be a bounded integer.");
+      output.bytes = entry;
+      continue;
+    }
+    const fieldValue = workflowText(entry, `artifactReference.${key}`, key === "source" ? 4 * 1024 : 1024);
     if (key === "kind") output.kind = fieldValue;
     else if (key === "label") output.label = fieldValue;
     else if (key === "source") output.source = fieldValue;
-    else if (key === "createdAt") output.createdAt = fieldValue;
+    else if (key === "sha256") {
+      if (!/^[0-9a-f]{64}$/u.test(fieldValue)) throw new Error("artifactReference.sha256 must be a SHA-256 digest.");
+      output.sha256 = fieldValue;
+    } else if (key === "createdAt") output.createdAt = fieldValue;
     else if (key === "expiresAt") output.expiresAt = fieldValue;
   }
   return output;
@@ -226,6 +331,157 @@ function assertWorkflowActionFields(value: Record<string, unknown>, allowed: rea
   }
 }
 
+function workflowGateReference(value: unknown, field: string): string | BoundedEvidenceReference {
+  if (typeof value === "string") return workflowText(value, field, 4 * 1024);
+  if (!workflowObject(value)) throw new Error(`${field} must be a bounded evidence reference.`);
+  return workflowArtifact(value) ?? (() => { throw new Error(`${field} must be a bounded evidence reference.`); })();
+}
+
+function workflowIndependentChecks(value: unknown): IndependentCheck[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new Error("independentChecks must contain at least one bounded check.");
+  return value.map((raw, index) => {
+    if (!workflowObject(raw) || Object.keys(raw).some((key) => !["id", "command", "result", "evidenceReference"].includes(key))) {
+      throw new Error(`independentChecks[${index}] is malformed.`);
+    }
+    const result = raw.result;
+    if (result !== "passed" && result !== "failed") throw new Error(`independentChecks[${index}].result is invalid.`);
+    return {
+      id: workflowText(raw.id, `independentChecks[${index}].id`, 256),
+      command: workflowText(raw.command, `independentChecks[${index}].command`, 8 * 1024),
+      result,
+      evidenceReference: workflowGateReference(raw.evidenceReference, `independentChecks[${index}].evidenceReference`),
+    };
+  });
+}
+
+function workflowFindingList(value: unknown): ScaleFinding[] {
+  if (!Array.isArray(value) || value.length > 64) throw new Error("findings must be a bounded array.");
+  return value.map((raw, index) => {
+    if (!workflowObject(raw) || Object.keys(raw).some((key) => !["id", "classification", "evidenceReference", "summary"].includes(key))) {
+      throw new Error(`findings[${index}] is malformed.`);
+    }
+    if (raw.classification !== "blocker" && raw.classification !== "fix-now" && raw.classification !== "optional") throw new Error(`findings[${index}].classification is invalid.`);
+    return {
+      id: workflowText(raw.id, `findings[${index}].id`, 256),
+      classification: raw.classification,
+      evidenceReference: workflowGateReference(raw.evidenceReference, `findings[${index}].evidenceReference`),
+      summary: workflowText(raw.summary, `findings[${index}].summary`, 8 * 1024),
+    };
+  });
+}
+
+const SCALE_POLICY_MAX_BYTES = 64 * 1024;
+const SCALE_POLICY_KEYS = new Set(["workItemId", "scope", "reason", "riskLimit", "owner", "compensatingEvidence", "expiresAt", "reviewAt"]);
+
+interface ParsedScalePolicy {
+  scope: string | string[];
+  reason: string;
+  riskLimit: string;
+  owner: string;
+  compensatingEvidence: string | BoundedEvidenceReference;
+  expiresAt: string;
+  reviewAt: string;
+  policyReference: BoundedEvidenceReference;
+}
+
+function readScalePolicy(policyPath: unknown, cwd: string, workItemId: string, stampedAt: string): ParsedScalePolicy {
+  const normalizedPath = normalizeCheckoutPath(workflowText(policyPath, "policyPath", 4 * 1024), cwd, "policyPath");
+  if (normalizedPath === ".") throw new Error("policyPath must identify a checkout-relative regular file.");
+  const root = realpathSync(cwd);
+  const absolute = resolve(root, normalizedPath);
+  let content: Buffer;
+  try {
+    const link = lstatSync(absolute);
+    if (link.isSymbolicLink() || !link.isFile() || link.size > SCALE_POLICY_MAX_BYTES) throw new Error("unsafe policy file");
+    const canonical = realpathSync(absolute);
+    if (canonical !== absolute) throw new Error("symlink policy file");
+    content = readFileSync(absolute);
+    if (content.byteLength > SCALE_POLICY_MAX_BYTES) throw new Error("oversized policy file");
+  } catch {
+    throw new Error("Scale policy must be a bounded, checkout-relative, non-symlink regular JSON file.");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(content.toString("utf8")) as unknown; } catch { throw new Error("Scale policy is not valid JSON."); }
+  if (!workflowObject(parsed) || !hasExactKeys(parsed, SCALE_POLICY_KEYS)
+    || parsed.workItemId !== workItemId
+    || parsed.expiresAt === undefined) {
+    throw new Error("Scale policy must exactly match the current work item and required waiver fields.");
+  }
+  const scope = Array.isArray(parsed.scope)
+    ? workflowStringArray(parsed.scope, "policy.scope")
+    : workflowText(parsed.scope, "policy.scope", 4 * 1024);
+  const reason = workflowText(parsed.reason, "policy.reason", 8 * 1024);
+  const riskLimit = workflowText(parsed.riskLimit, "policy.riskLimit", 4 * 1024);
+  const owner = workflowText(parsed.owner, "policy.owner", 1 * 1024);
+  const compensatingEvidence = workflowGateReference(parsed.compensatingEvidence, "policy.compensatingEvidence");
+  const expiresAt = workflowText(parsed.expiresAt, "policy.expiresAt", 128);
+  const reviewAt = parsed.reviewAt === undefined ? expiresAt : workflowText(parsed.reviewAt, "policy.reviewAt", 128);
+  const expiry = Date.parse(expiresAt);
+  const review = Date.parse(reviewAt);
+  const stamp = Date.parse(stampedAt);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(expiresAt)
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(reviewAt)
+    || !Number.isFinite(expiry) || !Number.isFinite(review) || !Number.isFinite(stamp)
+    || expiry <= stamp || review <= stamp) {
+    throw new Error("Scale policy expiry and review timestamps must be canonical and in the future.");
+  }
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  return {
+    scope, reason, riskLimit, owner, compensatingEvidence, expiresAt, reviewAt,
+    policyReference: {
+      id: `scale-policy-${sha256.slice(0, 24)}`,
+      kind: "scale-waiver-policy",
+      label: "trusted Scale waiver policy",
+      source: normalizedPath,
+      sha256,
+      bytes: content.byteLength,
+      createdAt: stampedAt,
+      expiresAt,
+    },
+  };
+}
+
+function hasExactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === new Set(keys).size && keys.every((key) => allowed.has(key));
+}
+
+function userMessageText(entry: unknown): string | undefined {
+  if (!workflowObject(entry) || entry.type !== "message" || !workflowObject(entry.message) || entry.message.role !== "user") return undefined;
+  const content = entry.message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || content.length === 0) return undefined;
+  let text = "";
+  for (const part of content) {
+    if (!workflowObject(part) || part.type !== "text" || typeof part.text !== "string") return undefined;
+    text += part.text;
+  }
+  return text;
+}
+
+function findScaleWaiverMessage(manager: LedgerSessionManager, workItemId: string): { entryId: string } {
+  const expected = `WAIVE SCALE: ${workItemId}`;
+  let branch: readonly unknown[];
+  try { branch = manager.getBranch(); } catch { throw new Error("Unable to read the active branch for user Scale-waiver provenance."); }
+  let matching: { entryId: string } | undefined;
+  for (const raw of branch) {
+    const value = userMessageText(raw);
+    if (value !== expected) continue;
+    if (!workflowObject(raw) || typeof raw.id !== "string" || !raw.id.trim()) continue;
+    matching = { entryId: raw.id };
+  }
+  if (!matching) throw new Error(`Scale waiver requires the exact active-branch user message '${expected}'.`);
+  for (const raw of branch) {
+    if (!workflowObject(raw) || raw.type !== "custom" || raw.customType !== LEDGER_CUSTOM_TYPE || !workflowObject(raw.data)) continue;
+    const data = raw.data;
+    const candidate = workflowObject(data.scaleWaiver) ? data.scaleWaiver : workflowObject(data.record) ? data.record.scaleWaiver : undefined;
+    if (workflowObject(candidate) && candidate.userMessageEntryId === matching.entryId) {
+      throw new Error("The exact user Scale-waiver message has already been consumed.");
+    }
+  }
+  return matching;
+}
+
 export interface PrimaryWorkflowControllerDependencies {
   pi: LedgerAppender;
   getSessionManager(): LedgerSessionManager | undefined;
@@ -233,6 +489,12 @@ export interface PrimaryWorkflowControllerDependencies {
   setWorkflowRecord(record: WorkflowRecord): void;
   cwd(): string;
   now?(): string;
+  /** Trusted mode seam for the exact latest completed Scale run. */
+  getLatestScaleRun?(): { runId: string; admissionId?: string; faculty: "scale"; state: "complete" | "failed" | "stopped" | "rejected" | "timed_out" } | undefined;
+  /** Trusted checkout capture; artifacts live only in an OS-temp directory. */
+  captureInspectionArtifacts?(cwd: string, now?: Date): CapturedInspectionArtifacts;
+  /** Reverify both retained artifact identities and the live checkout snapshot. */
+  verifyInspectionArtifacts?(cwd: string, inspection: PrimaryInspection): boolean;
 }
 
 export interface WorkflowActionResult {
@@ -477,6 +739,333 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     return commit(postValidation.record, timestamp);
   };
 
+  const recordInspection = (input: Record<string, unknown>): WorkflowActionResult => {
+    if (input.inspection !== undefined) {
+      if (!workflowObject(input.inspection)) throw new Error("inspection input is malformed.");
+      const { inspection: _nested, ...rest } = input;
+      if (Object.keys(input.inspection).some((key) => Object.hasOwn(rest, key))) throw new Error("Inspection fields must be supplied either nested or flat, not both.");
+      return recordInspection({ ...rest, ...input.inspection });
+    }
+    assertWorkflowActionFields(input, ["workItemId", "materiallyChangedPaths", "outOfScopeChanges", "independentChecks", "residualRisks", "settleRoadmapItemIds", "roadmapItemIds"]);
+    const current = deps.getWorkflowRecord();
+    if (!current) throw new Error("Cannot record Primary inspection without a prior workflow packet.");
+    const validation = validateWorkflowRecord(current);
+    if (!validation.ok) throw new Error(`Cannot record Primary inspection from blocked workflow state: ${validation.reason}`);
+    if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
+    if (current.phase !== "hand-handoff" && current.phase !== "primary-verifying") throw new Error(`Primary inspection requires hand-handoff or primary-verifying phase; current phase is ${current.phase}.`);
+    if (current.primaryInspection !== undefined && current.phase !== "primary-verifying") throw new Error("A current Primary inspection already exists; remediation or an explicit reverify phase must invalidate it before reinspection.");
+    if (input.materiallyChangedPaths === undefined) throw new Error("Primary inspection must classify every captured changed path as material or out of scope.");
+    const inspectedAt = workflowIsoNow(deps.now);
+    const capture = deps.captureInspectionArtifacts ?? captureInspectionArtifacts;
+    let captured: CapturedInspectionArtifacts | undefined;
+    try {
+      captured = capture(deps.cwd(), new Date(inspectedAt));
+    const rawPaths = workflowStringArray(input.materiallyChangedPaths, "materiallyChangedPaths", false);
+    const materiallyChangedPaths = rawPaths.map((path, index) => normalizeCheckoutPath(path, deps.cwd(), `materiallyChangedPaths[${index}]`));
+    if (new Set(materiallyChangedPaths).size !== materiallyChangedPaths.length) throw new Error("materiallyChangedPaths contains duplicate normalized paths.");
+    const outOfScopeRaw = input.outOfScopeChanges === undefined ? [] : input.outOfScopeChanges;
+    if (!Array.isArray(outOfScopeRaw) || outOfScopeRaw.length > 64) throw new Error("outOfScopeChanges must be a bounded array.");
+    const outOfScopeChanges = outOfScopeRaw.map((raw, index) => {
+      if (!workflowObject(raw) || Object.keys(raw).some((key) => !["path", "disposition"].includes(key))) throw new Error(`outOfScopeChanges[${index}] is malformed.`);
+      return {
+        path: normalizeCheckoutPath(workflowText(raw.path, `outOfScopeChanges[${index}].path`, 4 * 1024), deps.cwd(), `outOfScopeChanges[${index}].path`),
+        disposition: workflowText(raw.disposition, `outOfScopeChanges[${index}].disposition`, 4 * 1024),
+      };
+    });
+    if (new Set(outOfScopeChanges.map((entry) => entry.path)).size !== outOfScopeChanges.length) throw new Error("outOfScopeChanges contains duplicate paths.");
+    const independentChecks = workflowIndependentChecks(input.independentChecks);
+    const packetChecks = current.acceptanceChecks;
+    if (!packetChecks || independentChecks.length !== packetChecks.length
+      || new Set(independentChecks.map((check) => check.command)).size !== independentChecks.length
+      || !independentChecks.every((check) => packetChecks.includes(check.command))
+      || !packetChecks.every((command) => independentChecks.some((check) => check.command === command))) {
+      throw new Error("Primary inspection independent checks must exactly cover every packet acceptance check without duplicates or substitutions.");
+    }
+    if (!independentChecks.every((check) => check.result === "passed")) {
+      throw new Error("Primary inspection requires every packet acceptance check to pass with evidence.");
+    }
+    const residualRisks = input.residualRisks === undefined ? [] : workflowStringArray(input.residualRisks, "residualRisks", false);
+    const capturedPaths = [...captured.changedPaths];
+    const classifiedPaths = [...materiallyChangedPaths, ...outOfScopeChanges.map((entry) => entry.path)];
+    if (new Set(classifiedPaths).size !== classifiedPaths.length
+      || capturedPaths.length !== classifiedPaths.length
+      || !capturedPaths.every((path) => classifiedPaths.includes(path))
+      || !classifiedPaths.every((path) => capturedPaths.includes(path))) {
+      throw new Error("Primary inspection material/out-of-scope classifications must exactly partition the captured changed paths.");
+    }
+    const inspection: PrimaryInspection = {
+      id: `inspection-${captured.fingerprint.slice(0, 24)}`,
+      actor: "Primary",
+      inspectedAt,
+      statusReference: captured.statusReference,
+      completeDiffReference: captured.completeDiffReference,
+      diffFingerprint: captured.fingerprint,
+      materiallyChangedPaths,
+      outOfScopeChanges,
+      independentChecks,
+      residualRisks,
+    };
+    if (!validatePrimaryInspection(inspection, packetChecks)) throw new Error("Primary inspection is incomplete, malformed, or does not exactly cover passing packet acceptance checks.");
+    let next = {
+      ...current,
+      primaryInspection: inspection,
+      // Reinspection after blocked recovery invalidates any review tied to the
+      // replaced fingerprint. Remediation already clears these records when
+      // Hand starts its correction assignment.
+      ...(current.primaryInspection !== undefined ? {
+        scaleReview: undefined,
+        scaleWaiver: undefined,
+        scaleVerdict: undefined,
+        scaleWaiverReference: undefined,
+      } : {}),
+      scaleAdmission: undefined,
+      residualRisks: [...new Set([...current.residualRisks, ...inspection.residualRisks])],
+    } as WorkflowRecord;
+    const settleInput = input.settleRoadmapItemIds ?? input.roadmapItemIds;
+    if (input.settleRoadmapItemIds !== undefined && input.roadmapItemIds !== undefined) throw new Error("Supply only one roadmap settlement list.");
+    const settleIds = settleInput === undefined ? [] : workflowStringArray(settleInput, "settleRoadmapItemIds");
+    for (const itemId of settleIds) {
+      const item = next.roadmap.find((candidate) => candidate.id === itemId);
+      if (!item) throw new Error(`Unknown roadmap item ${itemId}.`);
+      if (item.status === "pending") {
+        // The Primary may first record that the inspected implementation is
+        // present, then independently settle it. This is still restricted to
+        // the explicitly supplied item IDs and requires the passed check gate.
+        next = applyRoadmapTransition(next, itemId, {
+          to: "implemented-unverified",
+          actor: "Primary",
+          timestamp: inspection.inspectedAt,
+          reason: "Primary observed the implementation during complete inspection; verification follows independent checks.",
+          reference: `inspection:${inspection.id}:implementation`,
+        });
+      }
+      if (next.roadmap.find((candidate) => candidate.id === itemId)?.status !== "implemented-unverified") {
+        throw new Error(`Roadmap item ${itemId} is not ready for Primary verification; evidence cannot settle already-settled state.`);
+      }
+      next = applyRoadmapTransition(next, itemId, {
+        to: "verified",
+        actor: "Primary",
+        timestamp: inspection.inspectedAt,
+        reason: "Primary independently verified the implemented roadmap item during complete inspection.",
+        reference: `inspection:${inspection.id}`,
+      });
+    }
+    if (next.phase === "hand-handoff") {
+      next = applyPhaseTransition(next, {
+        to: "primary-verifying", actor: "Primary", timestamp: inspection.inspectedAt,
+        reason: "Primary began complete checkout inspection after Hand handoff.", reference: `inspection:${inspection.id}:begin`,
+      });
+    }
+    next = applyPhaseTransition(next, {
+      to: "evidence-ready", actor: "Primary", timestamp: inspection.inspectedAt,
+      reason: "Primary completed the full diff, changed-path, out-of-scope, and independent-check inspection.", reference: `inspection:${inspection.id}`,
+    });
+    next.nextGate = "scale-review-or-waiver";
+    const result = commit(next, inspection.inspectedAt);
+    if (current.primaryInspection !== undefined) cleanupInspectionArtifacts(current.primaryInspection);
+    return result;
+    } catch (error) {
+      if (captured !== undefined) cleanupInspectionArtifactDirectory(captured.artifactDirectory);
+      throw error;
+    }
+  };
+
+  const recordScaleReview = (input: Record<string, unknown>): WorkflowActionResult => {
+    if (input.scaleReview !== undefined) {
+      if (!workflowObject(input.scaleReview)) throw new Error("scaleReview input is malformed.");
+      const { scaleReview: _nested, ...rest } = input;
+      if (Object.keys(input.scaleReview).some((key) => Object.hasOwn(rest, key))) throw new Error("Scale review fields must be supplied either nested or flat, not both.");
+      return recordScaleReview({ ...rest, ...input.scaleReview });
+    }
+    assertWorkflowActionFields(input, ["workItemId", "evidenceReferences", "verdict", "findings", "residualUncertainty", "correctionScope", "remediationPaths"]);
+    const current = deps.getWorkflowRecord();
+    if (!current) throw new Error("Cannot record Scale review without a prior workflow packet.");
+    const validation = validateWorkflowRecord(current);
+    if (!validation.ok) throw new Error(`Cannot record Scale review from blocked workflow state: ${validation.reason}`);
+    if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
+    if (current.phase !== "scale-running") throw new Error(`Scale review requires scale-running phase; current phase is ${current.phase}.`);
+    if (current.scaleReview !== undefined) throw new Error("A Scale review already exists for this Scale admission; a fresh Scale run is required.");
+    const admission = current.scaleAdmission;
+    if (!admission || !admission.boundRunId) throw new Error("Scale review requires an append-acknowledged bound Scale admission and run.");
+    const latest = deps.getLatestScaleRun?.();
+    if (!latest || latest.faculty !== "scale" || latest.state !== "complete"
+      || latest.admissionId !== admission.admissionId || latest.runId !== admission.boundRunId) {
+      throw new Error("Scale review must bind to the exact latest completed Scale run and current admission; no caller-supplied run identity is accepted.");
+    }
+    const verify = deps.verifyInspectionArtifacts ?? ((cwd: string, inspection: PrimaryInspection) => verifyInspectionArtifacts(cwd, inspection));
+    if (!current.primaryInspection || !verify(deps.cwd(), current.primaryInspection)) {
+      throw new Error("Scale review requires fresh, untampered inspection artifacts and an unchanged checkout.");
+    }
+    const previousAttempt = current.remediation?.attempt ?? 0;
+    const evidenceReferences = input.evidenceReferences === undefined ? [] : input.evidenceReferences;
+    if (!Array.isArray(evidenceReferences) || evidenceReferences.length === 0 || evidenceReferences.length > 64) throw new Error("evidenceReferences must be a bounded nonempty array.");
+    const normalizedEvidence = evidenceReferences.map((entry, index) => workflowGateReference(entry, `evidenceReferences[${index}]`));
+    const verdict = input.verdict;
+    if (verdict !== "pass" && verdict !== "changes-required") throw new Error("Scale review verdict must be pass or changes-required.");
+    const findings = workflowFindingList(input.findings ?? []);
+    const residualUncertainty = workflowText(input.residualUncertainty, "residualUncertainty", 8 * 1024);
+    if (!current.primaryInspection) throw new Error("Scale review requires the current Primary inspection.");
+    const correctionInput = input.correctionScope;
+    const remediationInput = input.remediationPaths;
+    if (correctionInput !== undefined && remediationInput !== undefined) {
+      throw new Error("Supply only one correctionScope or remediationPaths field.");
+    }
+    const scopeInput = correctionInput ?? remediationInput;
+    if (verdict === "pass" && scopeInput !== undefined) {
+      throw new Error("A passing Scale review cannot supply correctionScope.");
+    }
+    let correctionScope: string[] | undefined;
+    if (verdict === "changes-required") {
+      if (previousAttempt >= MAX_REMEDIATION_ATTEMPTS) throw new Error(`Remediation is capped at ${MAX_REMEDIATION_ATTEMPTS} correction attempts.`);
+      if (scopeInput === undefined) throw new Error("A changes-required Scale review requires a nonempty correctionScope of packet paths.");
+      const rawScope = workflowStringArray(scopeInput, "correctionScope");
+      correctionScope = rawScope.map((path, index) => normalizeCheckoutPath(path, deps.cwd(), `correctionScope[${index}]`));
+      if (new Set(correctionScope).size !== correctionScope.length) throw new Error("correctionScope contains duplicate normalized paths.");
+      const packetPaths = current.expectedPaths.map((path, index) => normalizeCheckoutPath(path, deps.cwd(), `packet.expectedPaths[${index}]`));
+      if (!isBoundedSubsetLocal(correctionScope, packetPaths)) {
+        throw new Error("correctionScope must be a nonempty subset of packet expectedPaths.");
+      }
+    }
+    const completedAt = workflowIsoNow(deps.now);
+    const review: ScaleReview = {
+      id: `scale-review-${admission.admissionId}-${latest.runId}`,
+      runId: latest.runId,
+      admissionId: admission.admissionId,
+      reviewer: "Scale",
+      completedAt,
+      freshContext: true,
+      diffFingerprint: current.primaryInspection.diffFingerprint,
+      evidenceReferences: normalizedEvidence,
+      verdict,
+      findings,
+      residualUncertainty,
+    };
+    if (!validateScaleReview(review, current.primaryInspection)) throw new Error("Scale review is stale, summary-only, malformed, or not bound to the current inspection.");
+    let next = {
+      ...current,
+      scaleReview: review,
+      scaleVerdict: verdict,
+      residualRisks: [...new Set([
+        ...current.residualRisks,
+        ...findings.filter((finding) => finding.classification === "optional").map((finding) => finding.summary),
+      ])],
+    } as WorkflowRecord;
+    if (verdict === "pass") {
+      next = applyPhaseTransition(next, {
+        to: "review-passed", actor: "Primary", timestamp: completedAt,
+        reason: "Primary recorded the exact completed Scale run's passing review.", reference: `scale-review:${review.id}`,
+      });
+      next.nextGate = "primary-acceptance";
+    } else {
+      // Scope is caller-provided and path-normalized above; prose findings
+      // remain linked evidence but never become mutation authority.
+      if (!correctionScope) throw new Error("A changes-required Scale review requires a bounded correction scope.");
+      next = applyPhaseTransition(next, {
+        to: "remediation", actor: "Primary", timestamp: completedAt,
+        reason: "Scale found blocker or fix-now findings requiring bounded remediation.", reference: `scale-review:${review.id}`,
+        correctionScope,
+      });
+      next.nextGate = "hand-correction";
+    }
+    return commit(next, completedAt);
+  };
+
+  const waiveScale = (input: Record<string, unknown>): WorkflowActionResult => {
+    if (input.scaleWaiver !== undefined) {
+      if (!workflowObject(input.scaleWaiver)) throw new Error("scaleWaiver input is malformed.");
+      const { scaleWaiver: _nested, ...rest } = input;
+      if (Object.keys(input.scaleWaiver).some((key) => Object.hasOwn(rest, key))) throw new Error("Scale waiver fields must be supplied either nested or flat, not both.");
+      return waiveScale({ ...rest, ...input.scaleWaiver });
+    }
+    assertWorkflowActionFields(input, ["workItemId", "basis", "scope", "reason", "riskLimit", "compensatingEvidence", "policyPath"]);
+    const current = deps.getWorkflowRecord();
+    if (!current) throw new Error("Cannot record Scale waiver without a prior workflow packet.");
+    const validation = validateWorkflowRecord(current);
+    if (!validation.ok) throw new Error(`Cannot record Scale waiver from blocked workflow state: ${validation.reason}`);
+    if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
+    if (current.phase !== "evidence-ready") throw new Error(`Scale waiver requires evidence-ready phase; current phase is ${current.phase}.`);
+    if (current.scaleWaiver !== undefined || current.scaleReview !== undefined) throw new Error("A current Scale waiver or review already exists; replacement is rejected.");
+    if (!current.primaryInspection) throw new Error("Scale waiver never bypasses Primary inspection.");
+    const basis = input.basis;
+    if (basis !== "user-explicit" && basis !== "policy") throw new Error("Scale waiver basis must be user-explicit or policy.");
+    const timestamp = workflowIsoNow(deps.now);
+    let waiver: ScaleWaiver;
+    if (basis === "user-explicit") {
+      if (input.policyPath !== undefined) throw new Error("A user-explicit Scale waiver cannot supply policyPath.");
+      const manager = deps.getSessionManager();
+      if (!manager) throw new Error("Scale waiver requires an active session branch for user-message provenance.");
+      const userMessage = findScaleWaiverMessage(manager, current.workItemId);
+      waiver = {
+        id: `scale-waiver-${timestamp.replace(/\\D/gu, "").slice(0, 17)}`,
+        item: current.workItemId,
+        basis,
+        actor: "Primary",
+        approver: "Primary",
+        date: timestamp,
+        scope: Array.isArray(input.scope) ? workflowStringArray(input.scope, "scope") : workflowText(input.scope, "scope", 4 * 1024),
+        reason: workflowText(input.reason, "reason", 8 * 1024),
+        riskLimit: workflowText(input.riskLimit, "riskLimit", 4 * 1024),
+        compensatingEvidence: workflowGateReference(input.compensatingEvidence, "compensatingEvidence"),
+        userMessageEntryId: userMessage.entryId,
+      };
+    } else {
+      if (input.scope !== undefined || input.reason !== undefined || input.riskLimit !== undefined || input.compensatingEvidence !== undefined) {
+        throw new Error("Policy waiver scope, reason, risk, and compensation must come only from the strict policy file.");
+      }
+      const policy = readScalePolicy(input.policyPath, deps.cwd(), current.workItemId, timestamp);
+      waiver = {
+        id: `scale-waiver-${policy.policyReference.id.slice(-24)}`,
+        item: current.workItemId,
+        basis,
+        actor: "Primary",
+        approver: "Primary",
+        date: timestamp,
+        scope: policy.scope,
+        reason: policy.reason,
+        riskLimit: policy.riskLimit,
+        compensatingEvidence: policy.compensatingEvidence,
+        policyReference: policy.policyReference,
+        owner: policy.owner,
+        expiresAt: policy.expiresAt,
+        reviewAt: policy.reviewAt,
+      };
+    }
+    if (!validateScaleWaiver(waiver, current.workItemId)) throw new Error("Scale waiver is broad, unsafe, uncompensated, or lacks the required provenance/policy controls.");
+    let next = { ...current, scaleWaiver: waiver, scaleWaiverReference: waiver.id } as WorkflowRecord;
+    next = applyPhaseTransition(next, {
+      to: "scale-waived", actor: "Primary", timestamp,
+      reason: "Primary recorded a narrow compensated Scale waiver without bypassing inspection.", reference: `decision:${waiver.id}`,
+    });
+    next.nextGate = "primary-acceptance";
+    return commit(next, timestamp);
+  };
+
+  const accept = (input: Record<string, unknown>): WorkflowActionResult => {
+    assertWorkflowActionFields(input, ["workItemId", "reason"]);
+    const current = deps.getWorkflowRecord();
+    if (!current) throw new Error("Cannot accept without a prior workflow packet.");
+    const validation = validateWorkflowRecord(current);
+    if (!validation.ok) throw new Error(`Cannot accept blocked workflow state: ${validation.reason}`);
+    if (input.workItemId !== undefined && input.workItemId !== current.workItemId) throw new Error("Conflicting work-item identity is rejected.");
+    if (!current.primaryInspection) throw new Error("Acceptance requires the current Primary inspection.");
+    const verify = deps.verifyInspectionArtifacts ?? ((cwd: string, inspection: PrimaryInspection) => verifyInspectionArtifacts(cwd, inspection));
+    if (!verify(deps.cwd(), current.primaryInspection)) throw new Error("Acceptance requires fresh, untampered inspection artifacts and an unchanged checkout.");
+    const timestamp = workflowIsoNow(deps.now);
+    if (current.scaleWaiver?.basis === "policy") {
+      const expiry = Date.parse(current.scaleWaiver.expiresAt ?? current.scaleWaiver.reviewAt ?? "");
+      const review = Date.parse(current.scaleWaiver.reviewAt ?? current.scaleWaiver.expiresAt ?? "");
+      if (!Number.isFinite(expiry) || !Number.isFinite(review) || expiry <= Date.parse(timestamp) || review <= Date.parse(timestamp)) {
+        throw new Error("Acceptance requires an unexpired Scale policy waiver and review date.");
+      }
+    }
+    const reason = input.reason === undefined ? "Primary accepted after the current Scale gate." : workflowText(input.reason, "reason", 8 * 1024);
+    const result = commit(applyPhaseTransition(current, {
+      to: "accepted", actor: "Primary", timestamp, reason, reference: `accept:${current.workItemId}`,
+    }), timestamp);
+    cleanupInspectionArtifacts(current.primaryInspection);
+    return result;
+  };
+
   return {
     execute(params: WorkflowParams | Record<string, unknown>): WorkflowActionResult {
       if (!workflowObject(params)) throw new Error("Workflow input must be an object.");
@@ -485,7 +1074,11 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       if (action === "specify") return specify(params);
       if (action === "record-red") return recordRed(params);
       if (action === "waive-tdd") return waiveTdd(params);
-      throw new Error("Workflow action must be specify, record-red, or waive-tdd.");
+      if (action === "record-inspection") return recordInspection(params);
+      if (action === "record-scale-review") return recordScaleReview(params);
+      if (action === "waive-scale") return waiveScale(params);
+      if (action === "accept") return accept(params);
+      throw new Error("Workflow action must be specify, record-red, waive-tdd, record-inspection, record-scale-review, waive-scale, or accept.");
     },
   };
 }
@@ -494,6 +1087,12 @@ function sameStringSetLocal(left: readonly string[], right: readonly string[]): 
   const a = new Set(left);
   const b = new Set(right);
   return a.size === left.length && a.size === b.size && [...a].every((value) => b.has(value));
+}
+
+function isBoundedSubsetLocal(subset: readonly string[], authority: readonly string[]): boolean {
+  const requested = new Set(subset);
+  const allowed = new Set(authority);
+  return requested.size === subset.length && [...requested].every((value) => allowed.has(value));
 }
 
 function resolveForWorkflow(cwd: string, path: string): string {
@@ -531,8 +1130,8 @@ export function registerGodmodeTools(
     pi.registerTool({
       name: "godmode_workflow",
       label: "Author Primary Workflow",
-      description: "Trusted Primary workflow authoring for one fresh packet, one observed intended-red result, or one narrow TDD waiver. The controller stamps Primary authority, timestamps, hashes the checkout red test, applies canonical transitions, and appends the ledger only after exact acknowledgement. It never accepts work. No actor, author, approver, phase, history, record, arbitrary evidence, shell, model, cwd, git, or acceptance authority can be supplied by the caller.",
-      promptSnippet: "Use only for the active Primary to specify one fresh packet, record one observed missing-behavior red result, or record one narrow TDD waiver; the controller supplies authority, timestamps, hash, and lifecycle phases.",
+      description: "Trusted Primary workflow authoring for one packet, intended-red/TDD gate, complete Primary inspection, exact Scale review, narrow Scale waiver, or final acceptance. The controller stamps Primary authority, timestamps, hashes the checkout red test, binds Scale to the exact completed run, applies canonical gates, and appends the ledger only after exact acknowledgement. No actor, author, approver, phase, history, record, arbitrary evidence, run identity, shell, model, cwd, git, or acceptance authority can be supplied by the caller.",
+      promptSnippet: "Use only for the active Primary to specify a packet, record intended red/TDD evidence, record complete inspection, record the exact completed Scale review, record a narrow compensated Scale waiver, or accept after all gates; the controller supplies authority, timestamps, hashes, run identity, and lifecycle phases.",
       parameters: WorkflowSchema,
       async execute(_toolCallId, params) {
         if (mode.snapshot.phase !== "active") throw new Error(`Primary workflow authoring requires healthy active Godmode; current mode is ${mode.snapshot.phase}.`);

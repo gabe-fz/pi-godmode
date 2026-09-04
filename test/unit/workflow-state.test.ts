@@ -35,18 +35,33 @@ test("workflow phase transitions follow the normative graph and preserve the inp
 });
 
 function advanceToReview(record = workflowRecord()) {
-  return ([
-    "classified",
-    "specified",
-    "red-test-ready",
-    "red-test-observed",
-    "hand-running",
-    "hand-handoff",
-    "primary-verifying",
-    "evidence-ready",
-    "scale-running",
-    "review-passed",
-  ] as const).reduce((current, to) => applyPhaseTransition(current, { ...audit, to }), record);
+  let current = ([
+    "classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying",
+  ] as const).reduce((value, to) => applyPhaseTransition(value, { ...audit, to }), record);
+  current = {
+    ...current,
+    primaryInspection: {
+      id: "inspection-test", actor: "Primary", inspectedAt: audit.timestamp,
+      statusReference: "artifact:status", completeDiffReference: "artifact:diff", diffFingerprint: "a".repeat(64),
+      materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+      independentChecks: [{ id: "check", command: "npm test", result: "passed", evidenceReference: "artifact:test" }], residualRisks: [],
+    },
+  };
+  current = applyPhaseTransition(current, { ...audit, to: "evidence-ready" });
+  current = applyPhaseTransition(current, { ...audit, to: "scale-running" });
+  current = {
+    ...current,
+    scaleAdmission: {
+      admissionId: `scale-admission-${"c".repeat(64)}`, nonce: "c".repeat(64), workItemId: current.workItemId,
+      inspectionId: "inspection-test", diffFingerprint: "a".repeat(64), admittedAt: audit.timestamp, boundRunId: "scale-run-test",
+    },
+    scaleReview: {
+      id: "scale-review-test", runId: "scale-run-test", admissionId: `scale-admission-${"c".repeat(64)}`, reviewer: "Scale", completedAt: audit.timestamp,
+      freshContext: true, diffFingerprint: "a".repeat(64), evidenceReferences: ["artifact:status", "artifact:diff", "artifact:test"],
+      verdict: "pass", findings: [], residualUncertainty: "none",
+    },
+  };
+  return applyPhaseTransition(current, { ...audit, to: "review-passed" });
 }
 
 test("blocking and recovery are bounded by the normative phase graph", () => {
@@ -84,8 +99,38 @@ test("only Primary can verify, waive, or accept and acceptance requires settled 
 });
 
 test("every non-draft canonical phase transition and persisted audit is Primary-only", () => {
-  const pathTo = (phases: readonly Parameters<typeof applyPhaseTransition>[1]["to"][]) =>
-    phases.reduce((current, to) => applyPhaseTransition(current, { ...audit, to }), workflowRecord());
+  const pathTo = (phases: readonly Parameters<typeof applyPhaseTransition>[1]["to"][]) => {
+    let current = workflowRecord();
+    for (const to of phases) {
+      if (to === "evidence-ready") {
+        current = {
+          ...current,
+          primaryInspection: {
+            id: "inspection-test", actor: "Primary", inspectedAt: audit.timestamp,
+            statusReference: "artifact:status", completeDiffReference: "artifact:diff", diffFingerprint: "a".repeat(64),
+            materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+            independentChecks: [{ id: "check", command: "npm test", result: "passed", evidenceReference: "artifact:test" }], residualRisks: [],
+          },
+        };
+      }
+      current = applyPhaseTransition(current, { ...audit, to });
+      if (to === "scale-running") {
+        current = {
+          ...current,
+          scaleAdmission: {
+            admissionId: `scale-admission-${"c".repeat(64)}`, nonce: "c".repeat(64), workItemId: current.workItemId,
+            inspectionId: "inspection-test", diffFingerprint: "a".repeat(64), admittedAt: audit.timestamp, boundRunId: "scale-run-test",
+          },
+          scaleReview: {
+            id: "scale-review-test", runId: "scale-run-test", admissionId: `scale-admission-${"c".repeat(64)}`, reviewer: "Scale", completedAt: audit.timestamp,
+            freshContext: true, diffFingerprint: "a".repeat(64), evidenceReferences: ["artifact:status", "artifact:diff", "artifact:test"],
+            verdict: "pass", findings: [], residualUncertainty: "none",
+          },
+        };
+      }
+    }
+    return current;
+  };
   const predecessors = {
     classified: [],
     specified: ["classified"],
@@ -100,12 +145,43 @@ test("every non-draft canonical phase transition and persisted audit is Primary-
     "review-passed": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running"],
     "scale-waived": ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready"],
     accepted: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running", "review-passed"],
-    remediation: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying"],
+    remediation: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running"],
     blocked: [],
     rejected: ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready", "scale-running", "review-passed"],
   } as const;
   for (const [target, phases] of Object.entries(predecessors)) {
     let predecessor = pathTo(phases);
+    if (target === "evidence-ready") {
+      predecessor = {
+        ...predecessor,
+        primaryInspection: {
+          id: "inspection-test", actor: "Primary", inspectedAt: audit.timestamp,
+          statusReference: "artifact:status", completeDiffReference: "artifact:diff", diffFingerprint: "a".repeat(64),
+          materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+          independentChecks: [{ id: "check", command: "npm test", result: "passed", evidenceReference: "artifact:test" }], residualRisks: [],
+        },
+      };
+    }
+    if (target === "scale-waived") {
+      predecessor = {
+        ...predecessor,
+        scaleWaiver: {
+          id: "scale-waiver-test", item: predecessor.workItemId, basis: "user-explicit", actor: "Primary", approver: "Primary",
+          date: audit.timestamp, scope: "named gate", reason: "User explicitly approved this narrow review exception.", riskLimit: "Only this named gate.",
+          compensatingEvidence: "artifact:compensation", userMessageEntryId: "user-entry",
+        },
+        scaleWaiverReference: "scale-waiver-test",
+      };
+    }
+    if (target === "remediation") {
+      predecessor = {
+        ...predecessor,
+        scaleReview: {
+          ...predecessor.scaleReview!, verdict: "changes-required",
+          findings: [{ id: "finding", classification: "fix-now", evidenceReference: "artifact:diff", summary: "Correction required." }],
+        },
+      };
+    }
     if (target === "accepted") {
       for (const item of predecessor.roadmap) {
         predecessor = applyRoadmapTransition(predecessor, item.id, { ...audit, actor: "Hand", to: "implemented-unverified" });

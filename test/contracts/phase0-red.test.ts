@@ -31,6 +31,17 @@ test("FR-1 rejects non-numbered requirement identifiers", () => {
 test("FR-6 Scale waiver cannot bypass mandatory review without bounded waiver metadata", () => {
   let record = workflowRecord();
   for (const to of ["classified", "specified", "red-test-ready", "red-test-observed", "hand-running", "hand-handoff", "primary-verifying", "evidence-ready"] as const) {
+    if (to === "evidence-ready") {
+      record = {
+        ...record,
+        primaryInspection: {
+          id: "inspection-phase0", actor: "Primary", inspectedAt: audit.timestamp,
+          statusReference: "artifact:status-phase0", completeDiffReference: "artifact:diff-phase0", diffFingerprint: "a".repeat(64),
+          materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+          independentChecks: [{ id: "check-phase0", command: "npm test", result: "passed", evidenceReference: "artifact:test-phase0" }], residualRisks: [],
+        },
+      };
+    }
     record = applyPhaseTransition(record, { ...audit, to });
   }
   for (const item of record.roadmap) {

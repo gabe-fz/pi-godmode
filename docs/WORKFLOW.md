@@ -1,6 +1,6 @@
 # Godmode target workflow
 
-> **Implementation status:** Phase 2 (FR-1, FR-3, and FR-4) is implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records checkout-derived red evidence or a narrow waiver, persists trusted Hand lifecycle transitions, and enforces pre-Hand TDD, sticky red-test, and bounded assignment scope integrity. Primary inspection, mandatory Scale, and later gates remain target behavior. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
+> **Implementation status:** Phase 3 (FR-1, FR-3, FR-4, FR-5, FR-6, and FR-7) is implemented: the normal-runtime `godmode_workflow` controller creates one append-acknowledged Primary packet, records complete inspection evidence, binds Scale reviews to the exact latest completed run, enforces bounded waivers, and invalidates stale gate evidence through capped remediation. Phase 4 interface-matched evidence automation and doctor remain future behavior. The current runtime/security boundary remains the one in [`SPEC.md`](../SPEC.md).
 
 ## 1. Authority and unit of work
 
@@ -26,7 +26,7 @@ Classification is recorded once in the session ledger. If work spans classificat
 2. **Numbered functional requirements:** `FR-1`, `FR-2`, …; each `functionalRequirements` entry contains the exact ID, an observable behavior description, and its applicable interface. IDs must exactly agree with `requirementIds`.
 3. **Non-goals:** explicit exclusions for this item. Non-goals are not hidden acceptance failures.
 4. **Roadmap:** a short sequence of implementation and verification increments. Each item maps to requirement IDs and has exactly one canonical status: `pending`, `implemented-unverified`, `verified`, `blocked`, or `waived` with a reason. Deferred ideas belong in non-goals or follow-up work, not in the acceptance roadmap.
-5. **Acceptance checks:** commands or interactions that can establish each applicable requirement.
+5. **Acceptance checks:** commands or interactions that can establish each applicable requirement. The recorded Primary inspection must contain exactly one independent, evidence-backed passing check for every packet command; missing, duplicate, substituted, or failed checks cannot produce `evidence-ready`.
 6. **Expected paths and authority constraints:** what Hand may change and what remains forbidden.
 
 The Primary authors this packet; Hand may ask questions or identify contradictions but may not silently broaden it. The packet is included in each fresh assignment rather than relying on conversation history.
@@ -116,7 +116,7 @@ After Hand returns, the Primary must independently:
 6. inspect test quality, including that red tests are still meaningful and cover the intended failure; and
 7. collect interface-matched evidence described in [`EVIDENCE.md`](./EVIDENCE.md).
 
-The Primary must not treat a command string, screenshot, test claim, or Scale verdict as proof without inspecting the underlying result and relevant source.
+The Primary must not treat a command string, screenshot, test claim, or Scale verdict as proof without inspecting the underlying result and relevant source. In Phase 3, `record-inspection` captures status and the complete tracked/staged/untracked diff with fixed non-shell Git arguments into bounded owner-only OS-temporary artifacts. The ledger retains only hashes, byte bounds, timestamps, expiry, and artifact paths; caller-supplied fingerprints/references are rejected. Material and out-of-scope classifications must exactly cover captured status, and the checkout/artifacts are reverified before Scale admission, review recording, and acceptance. Scale receives those artifacts plus every material and investigated out-of-scope path as read-only context.
 
 ## 7. Mandatory Scale review
 
@@ -128,18 +128,18 @@ Scale must report evidence-backed findings with file/line references where appli
 - **fix-now** — remediation is required before acceptance; or
 - **optional** — useful follow-up that does not block this item.
 
-Scale also states a verdict and residual uncertainty. The Primary owns the interpretation and final decision.
+Scale also states a verdict and residual uncertainty. The Primary owns the interpretation and final decision. Godmode persists a cryptographic Scale admission before spawn, append-binds the returned run ID, and records review only from the exact completed admission/run. Unbound, recovered-stale, or unrelated runs fail closed.
 
 A Scale waiver is permitted only when:
 
 - the user explicitly waives Scale for this named item; or
 - a narrowly documented project policy identifies a bounded class of change, owner, risk limit, expiry/review date, and compensating independent evidence.
 
-The waiver is recorded before acceptance and never means that the Primary may skip full-diff inspection or validation. A lack of Scale capacity is a blocked state, not an unrecorded waiver.
+The waiver is recorded before acceptance and never means that the Primary may skip full-diff inspection or validation. A lack of Scale capacity is a blocked state, not an unrecorded waiver. User waiver provenance is an exact active-branch message `WAIVE SCALE: <work-item-id>`; caller-supplied approval references have no authority. Policy waiver provenance is an existing bounded, checkout-confined, non-symlink JSON file naming the exact item, scope, reason, risk limit, owner, compensation, and canonical expiry/review timestamps; the controller reads and hashes it and never creates policy.
 
 ## 8. Remediation and re-review
 
-A blocker or fix-now finding returns the item to `remediation`. The Primary resolves the finding into a bounded correction assignment for Hand, preserving the original requirements and red tests. One correction assignment is active at a time; uncontrolled loops are forbidden. Hand reports the new diff and verification, and the Primary repeats full-diff/material-file inspection for the changed area and any affected interface.
+A blocker or fix-now finding returns the item to `remediation`. The `record-scale-review` action requires the Primary to supply a nonempty `correctionScope` (or `remediationPaths`) of normalized checkout-relative paths, and the controller persists it only when it is a subset of packet `expectedPaths`; finding summaries are evidence, never mutation paths. Hand's correction assignment must be a nonempty subset of that scope, preserving the original requirements and red tests. One correction assignment is active at a time; uncontrolled loops are forbidden. Hand reports the new diff and verification, and the Primary repeats full-diff/material-file inspection for the changed area and any affected interface.
 
 The item then returns to `scale-running` for a fresh Scale re-review of the remediation and its interaction with the original work. Scale must confirm disposition of every blocking finding. New blockers restart the same cycle. Optional findings are recorded as residual risk or roadmap work; they do not silently expand the assignment.
 
@@ -160,4 +160,4 @@ Neither Hand, Scale, a passing command, a derived checklist, nor a ledger transi
 
 ## 10. Current implementation checkpoint
 
-The current implementation is the Phase 2 workflow authoring, packet, TDD admission, and Hand integrity gate. It intentionally preserves the existing runtime/security contract and does not claim Primary inspection, mandatory Scale acceptance, interface-evidence automation, or doctor behavior. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.
+The current implementation is the Phase 3 workflow authoring, packet, TDD admission, Hand integrity, Primary inspection, mandatory Scale, waiver, and bounded remediation gate. It intentionally preserves the existing runtime/security contract and does not claim Phase 4 interface-evidence automation or doctor behavior. Documentation-only work may use the narrow waiver described above; feature and bugfix work must use observed red evidence (or a valid genuinely-unavailable-safe-seam waiver), and Hand admission remains non-accepting. Packet expected paths and acceptance checks may be deliberately narrowed for Hand but never expanded; the immutable red test is identified by the packet without granting it mutation authority, and any watched-file event remains a sticky integrity failure even if bytes are restored.

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ActiveToolLease } from "./active-tools.ts";
@@ -15,7 +16,8 @@ import { applyPhaseTransition, deriveChecklistView } from "./workflow-state.ts";
 import { statusLine, boundedStatus } from "./status.ts";
 import { SubagentsClient } from "./subagents-client.ts";
 import { createPrimaryWorkflowController, registerGodmodeTools } from "./tools.ts";
-import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord } from "./types.ts";
+import { verifyInspectionArtifacts, cleanupInspectionArtifacts, cleanupSupersededInspection } from "./inspection-artifacts.ts";
+import type { GodmodeConfig, ThinkingLevel, WorkflowPhase, WorkflowRecord, ScaleAdmission } from "./types.ts";
 import type { ChecklistView } from "./workflow-state.ts";
 
 export const PRIMARY_GUIDANCE_VERSION = 5;
@@ -46,6 +48,10 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   let verifiedGodmodeModels = new Set<string>();
   let workflowView: Readonly<ChecklistView> | undefined;
   let workflowRecord: WorkflowRecord | undefined;
+  // Lifecycle cleanup may clear workflowRecord before the extension's
+  // shutdown listener runs; retain only the latest trusted inspection pointer
+  // so temporary artifacts are still removed without retaining payloads.
+  let inspectionForCleanup: WorkflowRecord["primaryInspection"] | undefined;
   let workflowBlockedReason: string | undefined;
 
   const requireContext = (): ExtensionContext => {
@@ -68,18 +74,29 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     setThinkingLevel(level: ThinkingLevel): void { pi.setThinkingLevel(level); },
   };
 
+  const persistWorkflowRecord = (next: WorkflowRecord, timestamp: string): WorkflowRecord => {
+    const ctx = requireContext();
+    const previousInspection = workflowRecord?.primaryInspection;
+    const persisted = appendWorkflowSnapshot(pi, ctx.sessionManager, next, timestamp);
+    const persistedInspection = persisted.snapshot.record.primaryInspection;
+    // Cleanup follows exact append acknowledgement: a failed transition keeps
+    // the prior artifact available, while remediation/reinspection cannot
+    // orphan superseded temporary status/diff directories.
+    cleanupSupersededInspection(previousInspection, persistedInspection);
+    workflowRecord = persisted.snapshot.record;
+    if (persistedInspection) inspectionForCleanup = persistedInspection;
+    workflowView = deriveChecklistView(persisted.snapshot.record);
+    return persisted.snapshot.record;
+  };
+
   const persistWorkflowTransition = (to: WorkflowPhase, reason: string, reference: string): WorkflowRecord => {
     const current = workflowRecord;
     if (!current) throw new Error("Workflow transition requires an active canonical record.");
     const timestamp = new Date().toISOString();
     const next = applyPhaseTransition(current, { to, actor: "Primary", timestamp, reason, reference });
-    const ctx = requireContext();
     // appendWorkflowSnapshot verifies the exact new active leaf before this
     // closure changes either in-memory projection or record state.
-    const persisted = appendWorkflowSnapshot(pi, ctx.sessionManager, next, timestamp);
-    workflowRecord = persisted.snapshot.record;
-    workflowView = deriveChecklistView(persisted.snapshot.record);
-    return persisted.snapshot.record;
+    return persistWorkflowRecord(next, timestamp);
   };
 
   const mode = new GodmodeMode({
@@ -134,6 +151,44 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     },
     acquireTools: () => toolLease.acquire(),
     releaseTools: () => toolLease.release(),
+    createScaleAdmission: (record: WorkflowRecord): ScaleAdmission => {
+      const inspection = record.primaryInspection;
+      if (!inspection) throw new Error("Scale admission requires a complete Primary inspection.");
+      const nonce = randomBytes(32).toString("hex");
+      return {
+        admissionId: `scale-admission-${nonce}`,
+        nonce,
+        workItemId: record.workItemId,
+        inspectionId: inspection.id,
+        diffFingerprint: inspection.diffFingerprint,
+        admittedAt: new Date().toISOString(),
+      };
+    },
+    persistScaleAdmission: (admission: ScaleAdmission): WorkflowRecord => {
+      const current = workflowRecord;
+      if (!current || current.phase !== "evidence-ready") throw new Error("Scale admission persistence requires evidence-ready workflow state.");
+      const timestamp = new Date().toISOString();
+      const next = { ...applyPhaseTransition(current, {
+        to: "scale-running", actor: "Primary", timestamp,
+        reason: "Primary admitted Scale against the current evidence-ready packet and inspection.",
+        reference: `scale-admission:${admission.admissionId}`,
+      }), scaleAdmission: admission } as WorkflowRecord;
+      return persistWorkflowRecord(next, timestamp);
+    },
+    bindScaleAdmission: (admissionId: string, runId: string): WorkflowRecord => {
+      const current = workflowRecord;
+      if (!current || current.phase !== "scale-running" || !current.scaleAdmission
+        || current.scaleAdmission.admissionId !== admissionId || current.scaleAdmission.boundRunId !== undefined) {
+        throw new Error("Scale admission bind does not match the current unbound admission.");
+      }
+      const timestamp = new Date().toISOString();
+      const next = {
+        ...current,
+        scaleAdmission: { ...current.scaleAdmission, boundRunId: runId },
+      } as WorkflowRecord;
+      return persistWorkflowRecord(next, timestamp);
+    },
+    verifyInspectionArtifacts,
     onSnapshot: (snapshot) => {
       if (!currentCtx?.hasUI) return;
       const base = statusLine(snapshot, workflowView);
@@ -170,10 +225,15 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     getWorkflowRecord: () => workflowRecord,
     setWorkflowRecord(record) {
       workflowRecord = record;
-      workflowView = deriveChecklistView(record);
+      if (record?.primaryInspection) inspectionForCleanup = record.primaryInspection;
+      workflowView = record ? deriveChecklistView(record) : undefined;
       refreshWorkflowStatus(requireContext());
     },
     cwd: () => realpathSync(requireContext().cwd),
+    getLatestScaleRun: () => {
+      const last = mode.snapshot.lastRun;
+      return last?.faculty === "scale" ? { runId: last.runId, admissionId: last.admissionId, faculty: "scale" as const, state: last.state } : undefined;
+    },
   });
   registerGodmodeTools(pi, mode, workflowController);
 
@@ -183,6 +243,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
     },
     setWorkflowRecord(record) {
       workflowRecord = record;
+      if (record?.primaryInspection) inspectionForCleanup = record.primaryInspection;
     },
     setWorkflowBlockedReason(reason) {
       workflowBlockedReason = reason;
@@ -195,6 +256,7 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
+    inspectionForCleanup = undefined;
     await initializeGodmodeSession(mode, pi, ctx);
     refreshWorkflowStatus(ctx);
   });
@@ -248,10 +310,12 @@ export default function godmodeExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
+    const inspection = inspectionForCleanup;
+    await mode.shutdown();
+    if (inspection) cleanupInspectionArtifacts(inspection);
     workflowView = undefined;
     workflowRecord = undefined;
     workflowBlockedReason = undefined;
-    await mode.shutdown();
     currentCtx = undefined;
   });
 }

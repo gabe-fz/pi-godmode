@@ -32,11 +32,9 @@ Completed and pushed to `main`:
 - `ddde101` — verified plain-custom-entry snapshot appends, monotonic predecessor lineage, complete bounded branch validation, hostile getter/cycle handling, and negative recovery/acknowledgement tests.
 - `c0eab03` — Pi session lifecycle restoration/tree refresh, proof-authorized and persisted fork successors, trusted restart recovery, derived workflow footer state, strict evidence expiry, context-omission coverage, and bounded hostile-project/library fixtures.
 - `c2558ba` — truthful post-Phase-1 baseline report, proportionate passive surface/hostile fixtures, local docs checks, and five explicitly excluded intended-red contracts for FR-1, FR-6, FR-10, and FR-11.
-- Independent validation at the checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
+- Independent validation at the prior checkpoint: `npm run typecheck`, `npm test` (80 passing), explicit contract run (5 intended failures), `git diff --check`, complete Primary inspection, and fresh Scale re-review with no blocker/fix-now findings.
 
-Phase 2 specification-packet and TDD admission gates are implemented in the current working tree. The normal-runtime Primary workflow controller now persists fresh packets, checkout-derived intended-red evidence, and narrow waivers through exact ledger acknowledgements; Godmode persists trusted Hand lifecycle transitions and uses sticky immutable-red-test monitoring. The structured packet, deliberate Hand scope narrowing, and controller-to-admission path are covered by normal npm-test regressions. Preserve the completed Phase 0/1 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-6 and FR-10/FR-11 remain explicitly intended-red for their later phases.
-
-Next session should begin **Phase 3 Primary inspection and mandatory Scale gates**; this checkpoint does not claim FR-5, FR-6, or later doctor/evidence/migration behavior is shipped.
+Phase 3 Primary inspection and mandatory Scale gates are implemented in the current working tree. The normal-runtime Primary workflow controller now records complete inspection evidence, binds Scale reviews to the exact latest completed run, enforces bounded waivers, and invalidates stale gate records through remediation before a fresh review. Preserve the completed Phase 0/1/2 compatibility, fork-origin, context-omission, retention, and fail-closed recovery guarantees. FR-10/FR-11 and Phase 4 interface-evidence automation remain explicitly future work.
 
 ### Phase 0 — Baseline and contract fixtures
 
@@ -63,15 +61,15 @@ Next session should begin **Phase 3 Primary inspection and mandatory Scale gates
 - [x] Reject weakened/removed/tautological red tests and unauthorized assignment expansion; allow deliberate assignment narrowing; monitor the immutable test file and parent with sticky event state; persist Hand-running/handoff/blocked transitions while preserving existing faculty authority and shared-checkout guard.
 - [x] Primary authors red tests for packet validation, pre-Hand admission, intended failure provenance, waiver boundaries, and test-integrity checks. Run and capture the expected failures before Hand.
 - [x] Validation/evidence: feature and bugfix fixtures through their supported interface, docs-only waiver fixture, malformed/irrelevant-failure fixtures, and existing runtime tests.
-- **Exit:** FR-1, FR-3, and FR-4 pass with normal-runtime controller, persistence, admission, scope, and sticky-integrity evidence; a Hand handoff remains non-accepting. *(Phase 2 complete; FR-5/FR-6 and later gates remain for subsequent phases.)*
+- **Exit:** FR-1, FR-3, and FR-4 pass with normal-runtime controller, persistence, admission, scope, and sticky-integrity evidence; a Hand handoff remains non-accepting. *(Phase 2 complete; Phase 3 now supplies the subsequent Primary inspection and Scale gates.)*
 
 ### Phase 3 — Primary inspection and mandatory Scale
 
-- [ ] Implement the Primary gate for repository status, complete relevant diff, every materially changed file, out-of-scope investigation, independent checks, and residual-risk recording.
-- [ ] Require fresh-context Scale review before `accepted` for every feature/bugfix; allow only explicit user or narrow documented policy waivers with compensating evidence.
-- [ ] Define blocker/fix-now/optional findings and bounded remediation; force fresh Scale re-review after each correction and prevent uncontrolled loops.
-- [ ] Primary authors red acceptance-state tests for missing Scale, invalid waivers, stale/summary-only evidence, remediation/re-review, and Primary-only acceptance. Observe the intended failures before Hand.
-- [ ] Validation/evidence: real controlled feature/bugfix workflow, actual diff with an injected out-of-scope change, Scale finding fixture, correction Hand, re-review, and final Primary decision.
+- [x] Implement the Primary gate for repository status, complete relevant diff, every materially changed file, out-of-scope investigation, independent checks, and residual-risk recording.
+- [x] Require fresh-context Scale review before `accepted` for every feature/bugfix; allow only explicit user or narrow documented policy waivers with compensating evidence.
+- [x] Define blocker/fix-now/optional findings and bounded remediation; force fresh Scale re-review after each correction and prevent uncontrolled loops.
+- [x] Primary authors red acceptance-state tests for missing Scale, invalid waivers, stale/summary-only evidence, remediation/re-review, and Primary-only acceptance. Observe the intended failures before Hand.
+- [x] Validation/evidence: normal-runtime workflow/state fixtures cover exact inspection checks (including failed-check rejection), missing/stale gates, user/policy waiver boundaries, exact Scale-run binding and failed-run review rejection, correction invalidation, bounded attempts, fresh inspection/review, and Primary-only acceptance; the Scale mode fixture verifies pre-spawn lifecycle persistence and complete read-only path context.
 - **Exit:** FR-5, FR-6, and FR-7 are independently evidenced; no child or checklist can accept work.
 
 ### Phase 4 — Interface-matched evidence matrix

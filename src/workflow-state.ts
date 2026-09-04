@@ -12,6 +12,15 @@ import {
   type WorkflowRecord,
   type WorkflowRoadmapItem,
   type FunctionalRequirement,
+  type BoundedEvidenceReference,
+  type IndependentCheck,
+  type PrimaryInspection,
+  type ScaleFinding,
+  type ScaleReview,
+  type ScaleWaiver,
+  type ScaleAdmission,
+  type Remediation,
+  MAX_REMEDIATION_ATTEMPTS,
 } from "./types.ts";
 
 const CLASSIFICATIONS = new Set<string>(WORKFLOW_CLASSIFICATIONS);
@@ -23,6 +32,13 @@ const ACTORS = new Set<string>(WORKFLOW_ACTORS);
 // supplies any of these audit fields.
 const PRIMARY_ONLY_PHASES = new Set<WorkflowPhase>(WORKFLOW_PHASES.filter((phase) => phase !== "draft"));
 const PRIMARY_ONLY_ROADMAP_STATUSES = new Set<RoadmapStatus>(["verified", "waived"]);
+const WORKFLOW_RECORD_KEYS = new Set([
+  "workItemId", "classification", "goal", "requirementIds", "functionalRequirements", "nonGoals", "expectedPaths",
+  "phase", "roadmap", "history", "nextGate", "blockers", "residualRisks", "evidence", "packetAuthor",
+  "acceptanceChecks", "authorityConstraints", "redTestEvidence", "tddWaiver", "unresolvedDecisions", "redTestReference",
+  "tddWaiverReference", "scaleVerdict", "scaleWaiverReference", "changedScopeSummary", "latestCapsuleReference",
+  "primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation",
+]);
 
 const ROADMAP_TRANSITIONS: Readonly<Record<RoadmapStatus, readonly RoadmapStatus[]>> = {
   pending: ["implemented-unverified", "blocked", "waived"],
@@ -38,6 +54,8 @@ export interface PhaseTransitionInput {
   timestamp: string;
   reason: string;
   reference: string;
+  /** Trusted controller-supplied correction paths; direct callers fall back to packet paths. */
+  correctionScope?: string[];
 }
 
 export interface RoadmapTransitionInput {
@@ -139,6 +157,11 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
     "authorityConstraints",
     "redTestEvidence",
     "tddWaiver",
+    "primaryInspection",
+    "scaleAdmission",
+    "scaleReview",
+    "scaleWaiver",
+    "remediation",
   ] as const;
   for (const key of optionalKeys) {
     const value = record[key];
@@ -158,6 +181,40 @@ function cloneRecord(record: WorkflowRecord): WorkflowRecord {
           requirementIds: Array.isArray(objectValue.requirementIds) ? [...objectValue.requirementIds] : objectValue.requirementIds,
           scope: Array.isArray(objectValue.scope) ? [...objectValue.scope] : objectValue.scope,
           ...(isObject(objectValue.compensatingEvidence) ? { compensatingEvidence: { ...objectValue.compensatingEvidence } } : {}),
+        };
+      } else if (key === "primaryInspection" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          materiallyChangedPaths: Array.isArray(objectValue.materiallyChangedPaths) ? [...objectValue.materiallyChangedPaths] : objectValue.materiallyChangedPaths,
+          outOfScopeChanges: Array.isArray(objectValue.outOfScopeChanges) ? objectValue.outOfScopeChanges.map((entry) => isObject(entry) ? { ...entry } : entry) : objectValue.outOfScopeChanges,
+          independentChecks: Array.isArray(objectValue.independentChecks) ? objectValue.independentChecks.map((entry) => isObject(entry) ? { ...entry, ...(isObject(entry.evidenceReference) ? { evidenceReference: { ...entry.evidenceReference } } : {}) } : entry) : objectValue.independentChecks,
+          ...(isObject(objectValue.statusReference) ? { statusReference: { ...objectValue.statusReference } } : {}),
+          ...(isObject(objectValue.completeDiffReference) ? { completeDiffReference: { ...objectValue.completeDiffReference } } : {}),
+        };
+      } else if (key === "scaleAdmission" && isObject(value)) {
+        copied = { ...(value as Record<string, unknown>) };
+      } else if (key === "scaleReview" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          evidenceReferences: Array.isArray(objectValue.evidenceReferences) ? objectValue.evidenceReferences.map((entry) => isObject(entry) ? { ...entry } : entry) : objectValue.evidenceReferences,
+          findings: Array.isArray(objectValue.findings) ? objectValue.findings.map((entry) => isObject(entry) ? { ...entry, ...(isObject(entry.evidenceReference) ? { evidenceReference: { ...entry.evidenceReference } } : {}) } : entry) : objectValue.findings,
+        };
+      } else if (key === "scaleWaiver" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          scope: Array.isArray(objectValue.scope) ? [...objectValue.scope] : objectValue.scope,
+          ...(isObject(objectValue.compensatingEvidence) ? { compensatingEvidence: { ...objectValue.compensatingEvidence } } : {}),
+          ...(isObject(objectValue.policyReference) ? { policyReference: { ...objectValue.policyReference } } : {}),
+        };
+      } else if (key === "remediation" && isObject(value)) {
+        const objectValue = value as Record<string, unknown>;
+        copied = {
+          ...objectValue,
+          sourceFindingIds: Array.isArray(objectValue.sourceFindingIds) ? [...objectValue.sourceFindingIds] : objectValue.sourceFindingIds,
+          correctionScope: Array.isArray(objectValue.correctionScope) ? [...objectValue.correctionScope] : objectValue.correctionScope,
         };
       }
       (cloned as unknown as Record<string, unknown>)[key] = copied;
@@ -304,15 +361,287 @@ function packetStringArray(value: unknown): value is string[] {
   return Array.isArray(value)
     && value.length > 0
     && value.length <= 64
-    && value.every((entry) => boundedPacketString(entry, 4 * 1024));
+    && value.every((entry) => boundedPacketString(entry, 4 * 1024))
+    && new Set(value).size === value.length;
 }
 
 function validArtifactReference(value: unknown): boolean {
   if (typeof value === "string") return boundedPacketString(value, 4 * 1024);
-  if (!isObject(value) || !hasOnlyKeys(value, new Set(["id", "kind", "label", "source", "createdAt", "expiresAt"])) || !boundedPacketString(value.id, 256)) return false;
-  return Object.entries(value).every(([key, entry]) =>
-    ["id", "kind", "label", "source", "createdAt", "expiresAt"].includes(key)
-      && (entry === undefined || boundedPacketString(entry, 1024)));
+  const allowed = new Set(["id", "kind", "label", "source", "sha256", "bytes", "createdAt", "expiresAt"]);
+  if (!isObject(value) || !hasOnlyKeys(value, allowed) || !boundedPacketString(value.id, 256)) return false;
+  return Object.entries(value).every(([key, entry]) => {
+    if (!allowed.has(key) || entry === undefined) return false;
+    if (key === "bytes") return typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0 && entry <= 2 * 1024 * 1024;
+    if (key === "sha256") return SHA256_HEX.test(typeof entry === "string" ? entry : "");
+    return boundedPacketString(entry, key === "source" ? 4 * 1024 : 1024);
+  });
+}
+
+const INSPECTION_KEYS = new Set([
+  "id", "actor", "inspectedAt", "statusReference", "completeDiffReference", "diffFingerprint",
+  "materiallyChangedPaths", "outOfScopeChanges", "independentChecks", "residualRisks",
+]);
+const OUT_OF_SCOPE_KEYS = new Set(["path", "disposition"]);
+const CHECK_KEYS = new Set(["id", "command", "result", "evidenceReference"]);
+const REVIEW_KEYS = new Set([
+  "id", "runId", "admissionId", "reviewer", "completedAt", "freshContext", "diffFingerprint",
+  "evidenceReferences", "verdict", "findings", "residualUncertainty",
+]);
+const FINDING_KEYS = new Set(["id", "classification", "evidenceReference", "summary"]);
+const SCALE_ADMISSION_KEYS = new Set(["admissionId", "nonce", "workItemId", "inspectionId", "diffFingerprint", "admittedAt", "boundRunId"]);
+const SCALE_WAIVER_KEYS = new Set([
+  "id", "item", "basis", "actor", "approver", "date", "scope", "reason", "riskLimit",
+  "compensatingEvidence", "userMessageEntryId", "policyReference", "owner", "expiresAt", "reviewAt",
+]);
+const REMEDIATION_KEYS = new Set([
+  "id", "sourceReviewId", "sourceFindingIds", "correctionScope", "attempt", "maxAttempts", "active", "createdAt",
+]);
+const SHA256_GATE = /^[0-9a-f]{64}$/u;
+
+function validBoundedGateText(value: unknown, maximum = 8 * 1024): value is string {
+  return boundedPacketString(value, maximum);
+}
+
+function validGateReference(value: unknown): boolean {
+  if (!validArtifactReference(value)) return false;
+  if (typeof value === "string" && /^(?:none|n\/a|na|unknown|tbd)$/iu.test(value.trim())) return false;
+  if (!isObject(value) || value.expiresAt === undefined) return true;
+  // Structural validation deliberately does not compare expiry to wall clock:
+  // accepted terminal records remain valid after temporary artifacts expire.
+  // Live freshness is checked at Scale admission/review and final accept.
+  return canonicalUtcDate(value.expiresAt);
+}
+
+function validCheckoutRelativePath(value: unknown): value is string {
+  return typeof value === "string"
+    && validBoundedGateText(value, 4 * 1024)
+    && !value.startsWith("/")
+    && !value.split(/[\\/]/u).includes("..")
+    && value !== ".";
+}
+
+function referenceIdentity(value: string | BoundedEvidenceReference): string {
+  return typeof value === "string" ? value : value.id;
+}
+
+function validUniqueReferences(value: unknown, minimum = 1): value is Array<string | BoundedEvidenceReference> {
+  if (!Array.isArray(value) || value.length < minimum || value.length > 64) return false;
+  const identities = value.map((entry) => {
+    if (!validGateReference(entry)) return undefined;
+    return referenceIdentity(entry as string | BoundedEvidenceReference);
+  });
+  return identities.every((entry): entry is string => entry !== undefined)
+    && new Set(identities).size === identities.length;
+}
+
+function validIndependentCheck(value: unknown): value is IndependentCheck {
+  return isObject(value)
+    && hasOnlyKeys(value, CHECK_KEYS)
+    && validBoundedGateText(value.id, 256)
+    && validBoundedGateText(value.command, 8 * 1024)
+    && (value.result === "passed" || value.result === "failed")
+    && validGateReference(value.evidenceReference);
+}
+
+function validPrimaryInspection(value: unknown, acceptanceChecks?: readonly string[]): value is PrimaryInspection {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, INSPECTION_KEYS)
+    || !validBoundedGateText(value.id, 256)
+    || value.actor !== "Primary"
+    || !canonicalUtcDate(value.inspectedAt)
+    || !validGateReference(value.statusReference)
+    || !validGateReference(value.completeDiffReference)
+    || !SHA256_GATE.test(typeof value.diffFingerprint === "string" ? value.diffFingerprint : "")
+    || !Array.isArray(value.materiallyChangedPaths)
+    || value.materiallyChangedPaths.length > 64
+    || !value.materiallyChangedPaths.every(validCheckoutRelativePath)
+    || new Set(value.materiallyChangedPaths).size !== value.materiallyChangedPaths.length
+    || !Array.isArray(value.outOfScopeChanges)
+    || value.outOfScopeChanges.length > 64
+    || !value.outOfScopeChanges.every((entry) => isObject(entry)
+      && hasOnlyKeys(entry, OUT_OF_SCOPE_KEYS)
+      && validCheckoutRelativePath(entry.path)
+      && validBoundedGateText(entry.disposition, 4 * 1024))
+    || !Array.isArray(value.independentChecks)
+    || value.independentChecks.length === 0
+    || value.independentChecks.length > 64
+    || !value.independentChecks.every(validIndependentCheck)
+    || !Array.isArray(value.residualRisks)
+    || value.residualRisks.length > 64
+    || !value.residualRisks.every((entry) => validBoundedGateText(entry, 4 * 1024))) return false;
+  const checks = value.independentChecks as IndependentCheck[];
+  const outOfScopeChanges = value.outOfScopeChanges as Array<{ path: string; disposition: string }>;
+  if (new Set(checks.map((check) => check.id)).size !== checks.length) return false;
+  if (new Set(checks.map((check) => check.command)).size !== checks.length) return false;
+  if (new Set(outOfScopeChanges.map((entry) => entry.path)).size !== outOfScopeChanges.length) return false;
+  // Every recorded check is required evidence. A passing check cannot mask a
+  // failed companion check, and packet checks must map one-to-one to command
+  // strings without substitution or omission.
+  if (!checks.every((check) => check.result === "passed")) return false;
+  if (acceptanceChecks !== undefined) {
+    if (!Array.isArray(acceptanceChecks)
+      || acceptanceChecks.length === 0
+      || !acceptanceChecks.every((command) => typeof command === "string")
+      || new Set(acceptanceChecks).size !== acceptanceChecks.length
+      || checks.length !== acceptanceChecks.length
+      || !checks.every((check) => acceptanceChecks.includes(check.command))
+      || !acceptanceChecks.every((command) => checks.some((check) => check.command === command))) return false;
+  }
+  return true;
+}
+
+function validScaleAdmission(value: unknown, workItemId: string, inspection?: PrimaryInspection): value is ScaleAdmission {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, SCALE_ADMISSION_KEYS)
+    || !validBoundedGateText(value.admissionId, 256)
+    || !validBoundedGateText(value.nonce, 128)
+    || !/^[0-9a-f]{64}$/u.test(value.nonce)
+    || value.admissionId !== `scale-admission-${value.nonce}`
+    || value.workItemId !== workItemId
+    || !validBoundedGateText(value.inspectionId, 256)
+    || !SHA256_GATE.test(typeof value.diffFingerprint === "string" ? value.diffFingerprint : "")
+    || !canonicalUtcDate(value.admittedAt)
+    || (value.boundRunId !== undefined && !validBoundedGateText(value.boundRunId, 256))) return false;
+  if (inspection && (value.inspectionId !== inspection.id || value.diffFingerprint !== inspection.diffFingerprint)) return false;
+  return true;
+}
+
+export function validateScaleAdmission(value: unknown, workItemId: string, inspection?: PrimaryInspection): value is ScaleAdmission {
+  return validScaleAdmission(value, workItemId, inspection);
+}
+
+function validScaleFinding(value: unknown): value is ScaleFinding {
+  return isObject(value)
+    && hasOnlyKeys(value, FINDING_KEYS)
+    && validBoundedGateText(value.id, 256)
+    && (value.classification === "blocker" || value.classification === "fix-now" || value.classification === "optional")
+    && validGateReference(value.evidenceReference)
+    && validBoundedGateText(value.summary, 8 * 1024);
+}
+
+function validScaleReview(value: unknown, inspection: PrimaryInspection | undefined): value is ScaleReview {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, REVIEW_KEYS)
+    || !validBoundedGateText(value.id, 256)
+    || !validBoundedGateText(value.runId, 256)
+    || !validBoundedGateText(value.admissionId, 256)
+    || value.reviewer !== "Scale"
+    || !canonicalUtcDate(value.completedAt)
+    || value.freshContext !== true
+    || !SHA256_GATE.test(typeof value.diffFingerprint === "string" ? value.diffFingerprint : "")
+    || !validUniqueReferences(value.evidenceReferences, 1)
+    || (value.verdict !== "pass" && value.verdict !== "changes-required")
+    || !Array.isArray(value.findings)
+    || value.findings.length > 64
+    || !value.findings.every(validScaleFinding)
+    || !validBoundedGateText(value.residualUncertainty, 8 * 1024)) return false;
+  if (new Set(value.findings.map((finding) => finding.id)).size !== value.findings.length) return false;
+  const blocking = value.findings.some((finding) => finding.classification === "blocker" || finding.classification === "fix-now");
+  if (value.verdict === "pass" && blocking) return false;
+  if (value.verdict === "changes-required" && !blocking) return false;
+  if (!inspection || value.diffFingerprint !== inspection.diffFingerprint) return false;
+  const evidence = new Set(value.evidenceReferences.map((entry) => referenceIdentity(entry)));
+  // A passing review must prove every Primary evidence seam. A
+  // changes-required review may be intentionally narrow (the finding itself
+  // is the handoff), but must still be bound to the complete diff it found.
+  const required = value.verdict === "pass"
+    ? [inspection.statusReference, inspection.completeDiffReference,
+      ...inspection.independentChecks.map((check) => check.evidenceReference),
+      ...value.findings.map((finding) => finding.evidenceReference)].map(referenceIdentity)
+    : [inspection.completeDiffReference, ...value.findings.map((finding) => finding.evidenceReference)].map(referenceIdentity);
+  return required.every((reference) => evidence.has(reference));
+}
+
+function broadScaleScope(scope: string): boolean {
+  return /(?:^|\b)(?:all|any|everything|entire|whole|unbounded|unlimited)(?:\b|$)|\b(?:all|entire|whole)\s+(?:changes|work|project|repository|checkout|codebase|scope)\b/iu.test(scope);
+}
+
+function validScaleWaiver(value: unknown, workItemId: string): value is ScaleWaiver {
+  if (!isObject(value)
+    || !hasOnlyKeys(value, SCALE_WAIVER_KEYS)
+    || !validBoundedGateText(value.id, 256)
+    || value.item !== workItemId
+    || (value.basis !== "user-explicit" && value.basis !== "policy")
+    || value.actor !== "Primary"
+    || value.approver !== "Primary"
+    || !canonicalUtcDate(value.date)
+    || !validBoundedGateText(value.reason, 8 * 1024)
+    || !validBoundedGateText(value.riskLimit, 4 * 1024)
+    || !validGateReference(value.compensatingEvidence)) return false;
+  const scope = value.scope;
+  const scopeItems = typeof scope === "string" ? [scope] : scope;
+  if (!Array.isArray(scopeItems) || scopeItems.length === 0 || scopeItems.length > 64
+    || !scopeItems.every((entry) => validBoundedGateText(entry, 4 * 1024))
+    || scopeItems.some(broadScaleScope)) return false;
+  if (/time\s*pressure|deadline|capacity|convenience|no\s*time|urgent/iu.test(value.reason)) return false;
+  const compensationValue = value.compensatingEvidence as string | BoundedEvidenceReference;
+  const compensation = typeof compensationValue === "string"
+    ? compensationValue
+    : compensationValue.id;
+  if (/^(?:none|n\/a|na|no(?:ne)?(?:\s+provided)?|tbd)$/iu.test(compensation.trim())) return false;
+  if (value.basis === "user-explicit") {
+    if (!validBoundedGateText(value.userMessageEntryId, 256)
+      || value.policyReference !== undefined || value.owner !== undefined
+      || value.expiresAt !== undefined || value.reviewAt !== undefined) return false;
+  } else {
+    if (value.userMessageEntryId !== undefined || !validGateReference(value.policyReference)
+      || !validBoundedGateText(value.owner, 1 * 1024)
+      || (!canonicalUtcDate(value.expiresAt) && !canonicalUtcDate(value.reviewAt))) return false;
+    const date = Date.parse(value.date);
+    const expiryValue = value.expiresAt ?? value.reviewAt;
+    const reviewValue = value.reviewAt ?? value.expiresAt;
+    if (!canonicalUtcDate(expiryValue) || !canonicalUtcDate(reviewValue)) return false;
+    const expires = Date.parse(expiryValue);
+    const review = Date.parse(reviewValue);
+    if (!Number.isFinite(date) || !Number.isFinite(expires) || !Number.isFinite(review)
+      || expires <= date || review <= date) return false;
+  }
+  return true;
+}
+
+function canonicalUtcDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function validRemediation(value: unknown): value is Remediation {
+  return isObject(value)
+    && hasOnlyKeys(value, REMEDIATION_KEYS)
+    && validBoundedGateText(value.id, 256)
+    && validBoundedGateText(value.sourceReviewId, 256)
+    && Array.isArray(value.sourceFindingIds)
+    && value.sourceFindingIds.length > 0
+    && value.sourceFindingIds.length <= 64
+    && value.sourceFindingIds.every((entry) => validBoundedGateText(entry, 256))
+    && new Set(value.sourceFindingIds).size === value.sourceFindingIds.length
+    && Array.isArray(value.correctionScope)
+    && value.correctionScope.length > 0
+    && value.correctionScope.length <= 64
+    && value.correctionScope.every(validCheckoutRelativePath)
+    && new Set(value.correctionScope).size === value.correctionScope.length
+    && Number.isSafeInteger(value.attempt)
+    && (value.attempt as number) >= 1
+    && (value.attempt as number) <= MAX_REMEDIATION_ATTEMPTS
+    && value.maxAttempts === MAX_REMEDIATION_ATTEMPTS
+    && typeof value.active === "boolean"
+    && canonicalUtcDate(value.createdAt);
+}
+
+export function validatePrimaryInspection(value: unknown, acceptanceChecks?: readonly string[]): value is PrimaryInspection {
+  return validPrimaryInspection(value, acceptanceChecks);
+}
+
+export function validateScaleReview(value: unknown, inspection?: PrimaryInspection): value is ScaleReview {
+  return validScaleReview(value, inspection);
+}
+
+export function validateScaleWaiver(value: unknown, workItemId: string): value is ScaleWaiver {
+  return validScaleWaiver(value, workItemId);
+}
+
+export function validateRemediation(value: unknown): value is Remediation {
+  return validRemediation(value);
 }
 
 function validPacketMetadata(record: Record<string, unknown>): boolean {
@@ -504,6 +833,7 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     reason,
   });
   if (!isObject(record)) return invalid("Workflow record is not an object; blocked.");
+  if (Object.keys(record).some((key) => !WORKFLOW_RECORD_KEYS.has(key))) return invalid("Workflow record contains unknown state; blocked.");
   if (!nonEmptyString(record.workItemId)) return invalid("Workflow record has no work-item identity; blocked.");
   if (!CLASSIFICATIONS.has(record.classification as string)) return invalid("Unknown workflow classification; blocked.");
   if (!nonEmptyString(record.goal)
@@ -547,7 +877,11 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
     || (record.acceptanceChecks !== undefined && !packetStringArray(record.acceptanceChecks))
     || (record.authorityConstraints !== undefined && !packetStringArray(record.authorityConstraints))
     || (record.redTestEvidence !== undefined && !isObject(record.redTestEvidence))
-    || (record.tddWaiver !== undefined && !isObject(record.tddWaiver))) {
+    || (record.tddWaiver !== undefined && !isObject(record.tddWaiver))
+    || (record.primaryInspection !== undefined && !isObject(record.primaryInspection))
+    || (record.scaleReview !== undefined && !isObject(record.scaleReview))
+    || (record.scaleWaiver !== undefined && !isObject(record.scaleWaiver))
+    || (record.remediation !== undefined && !isObject(record.remediation))) {
     return invalid("Workflow record contains malformed packet, functional requirements, red-test, or waiver metadata; blocked.");
   }
   const hasPacketField = PACKET_FIELDS.some((field) => record[field] !== undefined);
@@ -556,6 +890,116 @@ export function validateWorkflowRecord(record: unknown): WorkflowValidation {
   }
   if (PACKET_REQUIRED_PHASES.has(record.phase) && !validPacketMetadata(record)) {
     return invalid("Workflow phase requires a complete Primary-authored specification packet; blocked.");
+  }
+  // Phase 3 gate records are optional only before the corresponding gate. Once
+  // a record claims evidence-ready/review-passed/waived/accepted authority,
+  // every current record must be complete and internally linked.
+  const inspection = record.primaryInspection;
+  if (inspection !== undefined && !validPrimaryInspection(inspection, record.acceptanceChecks)) {
+    return invalid("Primary inspection is malformed, incomplete, or does not cover every packet acceptance check; blocked.");
+  }
+  const review = record.scaleReview;
+  if (review !== undefined && !validScaleReview(review, inspection)) {
+    return invalid("Scale review is stale, summary-only, malformed, or not bound to the current inspection; blocked.");
+  }
+  const scaleAdmission = record.scaleAdmission;
+  if (scaleAdmission !== undefined && !validScaleAdmission(scaleAdmission, record.workItemId, inspection)) {
+    return invalid("Scale admission is malformed, stale, or not bound to the current Primary inspection; blocked.");
+  }
+  if (scaleAdmission !== undefined && !["scale-running", "review-passed", "remediation", "accepted"].includes(record.phase)) {
+    return invalid("A Scale admission is current only while Scale is running or its bound passing review remains authoritative; blocked.");
+  }
+  const scaleWaiver = record.scaleWaiver;
+  if (scaleWaiver !== undefined && !validScaleWaiver(scaleWaiver, record.workItemId)) {
+    return invalid("Scale waiver is malformed, broad, uncompensated, or not bound to this work item; blocked.");
+  }
+  const remediation = record.remediation;
+  if (remediation !== undefined && !validRemediation(remediation)) {
+    return invalid("Remediation record is malformed or exceeds the bounded correction policy; blocked.");
+  }
+  if (["evidence-ready", "scale-running", "review-passed", "scale-waived", "accepted"].includes(record.phase)
+    && inspection === undefined) {
+    return invalid("Evidence-ready workflow state requires a complete current Primary inspection; blocked.");
+  }
+  if (["review-passed", "accepted"].includes(record.phase) && review === undefined && scaleWaiver === undefined) {
+    return invalid("Review-passed workflow state requires a current completed Scale review; blocked.");
+  }
+  if (["scale-running", "review-passed", "remediation", "accepted"].includes(record.phase) && review !== undefined
+    && (!scaleAdmission?.boundRunId
+      || review.admissionId !== scaleAdmission.admissionId
+      || review.runId !== scaleAdmission.boundRunId)) {
+    return invalid("Passing Scale review is not durably bound to its exact admission and run; blocked.");
+  }
+  if (record.phase === "scale-waived" && scaleWaiver === undefined) {
+    return invalid("Scale-waived workflow state requires a current bounded Scale waiver; blocked.");
+  }
+  if (record.phase === "accepted" && review === undefined && scaleWaiver === undefined) {
+    return invalid("Accepted workflow state requires a current Scale review or bounded Scale waiver; blocked.");
+  }
+  if (review === undefined && record.scaleVerdict !== undefined
+    && ["review-passed", "accepted", "remediation"].includes(record.phase)) {
+    return invalid("Scale verdict has no current review evidence; blocked.");
+  }
+  if (review !== undefined && record.scaleVerdict !== undefined && record.scaleVerdict !== review.verdict) {
+    return invalid("Scale verdict does not match its current review; blocked.");
+  }
+  if (scaleWaiver !== undefined && record.scaleWaiverReference !== undefined && record.scaleWaiverReference !== scaleWaiver.id) {
+    return invalid("Scale-waiver reference is stale or does not identify the current waiver; blocked.");
+  }
+  if (["scale-waived", "accepted"].includes(record.phase)
+    && scaleWaiver !== undefined && record.scaleWaiverReference !== scaleWaiver.id) {
+    return invalid("Scale-waived workflow requires a matching current waiver reference; blocked.");
+  }
+  if (["scale-waived", "accepted"].includes(record.phase)
+    && scaleWaiver === undefined && record.scaleWaiverReference !== undefined) {
+    return invalid("Scale-waiver reference has no current waiver evidence; blocked.");
+  }
+  if (remediation !== undefined && review !== undefined && remediation.sourceReviewId !== review.id && record.phase === "remediation") {
+    return invalid("Remediation is not linked to the current Scale review; blocked.");
+  }
+  if (record.phase === "remediation" && remediation === undefined) {
+    return invalid("Remediation phase requires one active bounded correction; blocked.");
+  }
+  if (record.phase === "remediation" && review === undefined) {
+    return invalid("Remediation phase requires its current linked Scale review; blocked.");
+  }
+  if (record.phase === "remediation" && remediation !== undefined && remediation.active !== true) {
+    return invalid("Remediation phase requires one active bounded correction; blocked.");
+  }
+  if (remediation !== undefined) {
+    const packetPaths = new Set(record.expectedPaths.filter(validCheckoutRelativePath));
+    if (packetPaths.size !== record.expectedPaths.length
+      || remediation.correctionScope.some((path) => !packetPaths.has(path))) {
+      return invalid("Remediation correction scope must be nonempty checkout-relative packet paths; blocked.");
+    }
+  }
+  if (record.phase === "remediation" && remediation !== undefined && review !== undefined) {
+    const findingIds = new Set(review.findings
+      .filter((finding) => finding.classification === "blocker" || finding.classification === "fix-now")
+      .map((finding) => finding.id));
+    if (!remediation.sourceFindingIds.every((id) => findingIds.has(id))
+      || remediation.sourceFindingIds.length !== findingIds.size) {
+      return invalid("Remediation must retain every blocking source finding from the Scale review; blocked.");
+    }
+  }
+  if (inspection !== undefined) {
+    const changed = new Set(inspection.materiallyChangedPaths);
+    if (inspection.outOfScopeChanges.some((entry) => changed.has(entry.path))) {
+      return invalid("Primary inspection marks a materially changed path as out of scope; blocked.");
+    }
+  }
+  if (review !== undefined && scaleAdmission !== undefined
+    && (review.admissionId !== scaleAdmission.admissionId || review.runId !== scaleAdmission.boundRunId)) {
+    return invalid("Scale review is not bound to the current Scale admission and run; blocked.");
+  }
+  if (review !== undefined && scaleWaiver !== undefined) {
+    return invalid("A workflow cannot retain both a Scale review and Scale waiver as current gate evidence; blocked.");
+  }
+  if (record.phase === "scale-waived" && review !== undefined) {
+    return invalid("A Scale-waived workflow cannot also retain a Scale review; blocked.");
+  }
+  if (record.phase === "review-passed" && scaleWaiver !== undefined) {
+    return invalid("A review-passed workflow cannot also retain a Scale waiver; blocked.");
   }
   const items = record.roadmap as WorkflowRoadmapItem[];
   const roadmapIds = new Set<string>();
@@ -665,7 +1109,105 @@ export function applyPhaseTransition(record: WorkflowRecord, transition: PhaseTr
   if (transition.to === "accepted" && current.roadmap.some((item) => item.status !== "verified" && item.status !== "waived")) {
     throw new Error("Workflow cannot be accepted until every roadmap item is verified or validly waived.");
   }
+  if (transition.to === "evidence-ready" || transition.to === "scale-running") {
+    if (!current.primaryInspection || !validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)) {
+      throw new Error("Evidence-ready and Scale admission require a complete current Primary inspection covering every packet acceptance check.");
+    }
+    if (transition.to === "scale-running" && current.scaleWaiver !== undefined) {
+      throw new Error("A Scale-waived workflow cannot also enter Scale review without a fresh gate decision.");
+    }
+  }
+  if (transition.to === "review-passed") {
+    if (current.scaleWaiver !== undefined) throw new Error("A Scale-waived workflow cannot also pass a Scale review.");
+    if (!current.scaleAdmission?.boundRunId
+      || current.scaleReview?.admissionId !== current.scaleAdmission.admissionId
+      || current.scaleReview.runId !== current.scaleAdmission.boundRunId) {
+      throw new Error("Review-passed requires an append-acknowledged exact Scale admission and run binding.");
+    }
+    if (!current.primaryInspection || !validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)
+      || !current.scaleReview || !validScaleReview(current.scaleReview, current.primaryInspection)) {
+      throw new Error("Review-passed requires a complete current Primary inspection and Scale review.");
+    }
+    if (current.scaleReview.verdict !== "pass") throw new Error("Review-passed requires a passing Scale review.");
+  }
+  if (transition.to === "scale-waived") {
+    if (current.scaleReview !== undefined) throw new Error("A workflow with a Scale review cannot also enter Scale-waived state.");
+    if (!current.primaryInspection || !validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)
+      || !current.scaleWaiver || !validScaleWaiver(current.scaleWaiver, current.workItemId)) {
+      throw new Error("Scale waiver requires a complete current Primary inspection and valid bounded waiver.");
+    }
+  }
+  if (transition.to === "accepted") {
+    const reviewPath = current.phase === "review-passed"
+      && current.primaryInspection !== undefined
+      && current.scaleReview !== undefined
+      && validPrimaryInspection(current.primaryInspection, current.acceptanceChecks)
+      && validScaleReview(current.scaleReview, current.primaryInspection)
+      && current.scaleReview.verdict === "pass"
+      && current.scaleAdmission?.boundRunId === current.scaleReview.runId
+      && current.scaleAdmission.admissionId === current.scaleReview.admissionId;
+    const waiverPath = current.phase === "scale-waived"
+      && current.primaryInspection !== undefined
+      && current.scaleWaiver !== undefined
+      && validScaleWaiver(current.scaleWaiver, current.workItemId);
+    if (!reviewPath && !waiverPath) throw new Error("Acceptance requires a current passing Scale review or a valid bounded Scale waiver.");
+  }
+  if (transition.to === "remediation") {
+    if (current.phase !== "scale-running" || !current.primaryInspection || !current.scaleReview
+      || !validScaleReview(current.scaleReview, current.primaryInspection)
+      || current.scaleReview.verdict !== "changes-required"
+      || !current.scaleReview.findings.some((finding) => finding.classification === "blocker" || finding.classification === "fix-now")) {
+      throw new Error("Remediation requires a current Scale review with a blocker or fix-now finding.");
+    }
+  }
   const next = cloneRecord(current);
+  if (transition.to === "review-passed" && next.remediation !== undefined) {
+    next.remediation = { ...next.remediation, active: false };
+  }
+  if (transition.to === "remediation") {
+    const review = next.scaleReview!;
+    const blocking = review.findings.filter((finding) => finding.classification === "blocker" || finding.classification === "fix-now");
+    const attempt = (current.remediation?.attempt ?? 0) + 1;
+    if (attempt > MAX_REMEDIATION_ATTEMPTS) throw new Error(`Remediation is capped at ${MAX_REMEDIATION_ATTEMPTS} correction attempts.`);
+    const correctionScope = transition.correctionScope === undefined
+      ? [...current.expectedPaths]
+      : [...transition.correctionScope];
+    if (correctionScope.length === 0
+      || new Set(correctionScope).size !== correctionScope.length
+      || !correctionScope.every(validCheckoutRelativePath)
+      || correctionScope.some((path) => !current.expectedPaths.includes(path))) {
+      throw new Error("Remediation correction scope must be a nonempty subset of packet expected paths.");
+    }
+    // A fresh remediation cycle always gets a fresh bounded record. Direct
+    // transition callers use packet paths; the trusted controller supplies its
+    // narrower correction scope explicitly.
+    next.remediation = {
+      id: `remediation-${review.id}-${attempt}`,
+      sourceReviewId: review.id,
+      sourceFindingIds: blocking.map((finding) => finding.id),
+      correctionScope,
+      attempt,
+      maxAttempts: MAX_REMEDIATION_ATTEMPTS,
+      active: true,
+      createdAt: transition.timestamp,
+    };
+  }
+  if (transition.to === "hand-running" && (current.phase === "remediation" || current.remediation?.active === true)) {
+    // A correction assignment can never inherit acceptance evidence. Keep the
+    // bounded remediation linkage, but force a full reinspection/re-review.
+    next.primaryInspection = undefined;
+    next.scaleReview = undefined;
+    next.scaleAdmission = undefined;
+    next.scaleWaiver = undefined;
+    next.scaleVerdict = undefined;
+    next.scaleWaiverReference = undefined;
+  }
+  // Retain a bound passing admission through review-passed/accepted so the
+  // canonical record durably proves the exact reviewed run. Other exits clear
+  // the one-run reservation; remediation retains linkage through its review.
+  if (transition.to !== "scale-running" && transition.to !== "review-passed" && transition.to !== "remediation" && transition.to !== "accepted") {
+    next.scaleAdmission = undefined;
+  }
   next.phase = transition.to;
   next.history.push({
     kind: "phase",

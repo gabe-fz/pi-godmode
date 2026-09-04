@@ -1,10 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { statSync, watch } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ModelLease, ModelLeaseHost } from "./model-lease.ts";
 import { AmbiguousRpcOutcomeError, completionState, SubagentsClient } from "./subagents-client.ts";
 import { extensionCapacityMs, hardDeadlineMs, launchBackstopMs, MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
-import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, TerminalRunState, WorkflowPhase, WorkflowRecord } from "./types.ts";
+import type { ActiveRun, DeadlineStatus, DelegationInput, Disposable, Faculty, GodmodeConfig, GodmodeSnapshot, PrimaryInspection, ScaleAdmission, TerminalRunState, WorkflowPhase, WorkflowRecord } from "./types.ts";
+import { validateScaleAdmission } from "./workflow-state.ts";
 import { AGENT_NAMES, renderAssignment, validateDelegation, validateHandAdmission, verifyRedTestIdentity, type HandAdmissionBinding } from "./faculties.ts";
+import { inspectionArtifactContextPaths, readInspectionArtifactForContext, verifyInspectionArtifacts as verifyCapturedInspectionArtifacts } from "./inspection-artifacts.ts";
 
 export interface RedTestMonitor extends Disposable {
   /** Optional externally observable sticky state for deterministic hosts. */
@@ -15,6 +18,20 @@ export type RedTestMonitorFactory = (
   identity: { path: string; hash: string },
   onEvent: () => void,
 ) => RedTestMonitor;
+
+function createDefaultScaleAdmission(record: WorkflowRecord): ScaleAdmission {
+  const nonce = randomBytes(32).toString("hex");
+  const inspection = record.primaryInspection;
+  if (!inspection) throw new Error("Scale admission requires a complete Primary inspection.");
+  return {
+    admissionId: `scale-admission-${nonce}`,
+    nonce,
+    workItemId: record.workItemId,
+    inspectionId: inspection.id,
+    diffFingerprint: inspection.diffFingerprint,
+    admittedAt: new Date().toISOString(),
+  };
+}
 
 function defaultRedTestMonitor(cwd: string, identity: { path: string; hash: string }, onEvent: () => void): RedTestMonitor {
   const absolute = resolve(cwd, identity.path);
@@ -97,6 +114,13 @@ export interface ModeDependencies {
   persistWorkflowTransition?(to: WorkflowPhase, reason: string, reference: string): WorkflowRecord;
   /** Synchronous seam for the immutable red-test monitor. */
   monitorRedTest?: RedTestMonitorFactory;
+  /** Trusted Scale lifecycle callbacks. Admission is persisted before spawn;
+   * binding is persisted after the host acknowledges the run ID. */
+  createScaleAdmission?(record: WorkflowRecord): ScaleAdmission;
+  persistScaleAdmission?(admission: ScaleAdmission): WorkflowRecord;
+  bindScaleAdmission?(admissionId: string, runId: string): WorkflowRecord;
+  /** Reverify captured inspection artifacts and the live checkout at admission. */
+  verifyInspectionArtifacts?(cwd: string, inspection: PrimaryInspection): boolean;
 }
 
 export class GodmodeMode {
@@ -187,18 +211,53 @@ export class GodmodeMode {
     if (this.#active) throw new Error(`Only one Divine Faculty may be active; ${this.#active.faculty} is ${this.#active.phase}.`);
     const config = this.#config;
     if (!config) throw new Error("Godmode configuration is unavailable.");
-    if (input.faculty === "hand" && !this.#deps.persistWorkflowTransition) {
-      throw new Error("Hand admission requires trusted workflow lifecycle persistence.");
+    if ((input.faculty === "hand" || input.faculty === "scale") && !this.#deps.persistWorkflowTransition) {
+      throw new Error(`${input.faculty === "hand" ? "Hand" : "Scale"} admission requires trusted workflow lifecycle persistence.`);
     }
-    const canonicalRecord = input.faculty === "hand" ? this.#readWorkflowRecord() : undefined;
+    const canonicalRecord = input.faculty === "hand" || input.faculty === "scale" ? this.#readWorkflowRecord() : undefined;
+    let scaleAdmission: ScaleAdmission | undefined;
+    if (input.faculty === "scale") {
+      if (!canonicalRecord) throw new Error("Scale admission requires canonical workflow state; absent state is blocked.");
+      const inspection = canonicalRecord.primaryInspection;
+      if (!inspection) throw new Error("Scale admission requires a complete current Primary inspection.");
+      const verify = this.#deps.verifyInspectionArtifacts ?? ((cwd: string, value: PrimaryInspection) => verifyCapturedInspectionArtifacts(cwd, value));
+      if (!verify(this.#deps.cwd(), inspection)) throw new Error("Scale admission requires fresh, untampered inspection artifacts and an unchanged checkout.");
+      const artifactPaths = inspectionArtifactContextPaths(inspection);
+      if (artifactPaths.length < 2
+        || !readInspectionArtifactForContext(inspection.statusReference, "git-status")
+        || !readInspectionArtifactForContext(inspection.completeDiffReference, "git-complete-diff")) {
+        throw new Error("Scale admission requires readable bounded status and complete-diff artifacts.");
+      }
+      const inspectionPaths = [...new Set([
+        ...inspection.materiallyChangedPaths,
+        ...inspection.outOfScopeChanges.map((change) => change.path),
+      ])];
+      // The Primary may provide additional context, but cannot omit any
+      // materially changed or investigated out-of-scope checkout path or
+      // either trusted artifact source from the independent assignment.
+      input = {
+        ...input,
+        contextFiles: [...new Set([...(input.contextFiles ?? []), ...artifactPaths])],
+        expectedPaths: [...new Set([...(input.expectedPaths ?? []), ...inspectionPaths])],
+      };
+      const createAdmission = this.#deps.createScaleAdmission ?? createDefaultScaleAdmission;
+      scaleAdmission = createAdmission(canonicalRecord);
+      if (!validateScaleAdmission(scaleAdmission, canonicalRecord.workItemId, inspection)) {
+        throw new Error("Trusted Scale admission callback returned malformed or stale admission data.");
+      }
+      if (!this.#deps.persistScaleAdmission || !this.#deps.bindScaleAdmission) {
+        throw new Error("Scale admission requires trusted create/persist/bind lifecycle callbacks.");
+      }
+    }
     const normalized = validateDelegation(input, this.#deps.cwd(), canonicalRecord);
     const handBinding = input.faculty === "hand"
       ? validateHandAdmission(normalized, this.#deps.cwd(), canonicalRecord)
       : undefined;
-    const assignment = renderAssignment(normalized, input.faculty === "hand" ? canonicalRecord : undefined);
+    const assignment = renderAssignment(normalized, input.faculty === "hand" || input.faculty === "scale" ? canonicalRecord : undefined);
     const startedAt = (this.#deps.now ?? Date.now)();
     const softTimeoutMs = config.faculties[normalized.faculty].timeoutMs;
     const active: ActiveRun = {
+      ...(scaleAdmission !== undefined ? { admissionId: scaleAdmission.admissionId } : {}),
       faculty: normalized.faculty,
       agent: AGENT_NAMES[normalized.faculty],
       title: normalized.title,
@@ -233,6 +292,17 @@ export class GodmodeMode {
           this.#activeHandRedMonitor = (this.#deps.monitorRedTest
             ?? ((redIdentity, onEvent) => defaultRedTestMonitor(this.#deps.cwd(), redIdentity, onEvent)))(identity, markCompromised);
         }
+      } else if (normalized.faculty === "scale") {
+        // Persist the complete admission before spawn. A failed lifecycle
+        // append or a missing trusted callback must not leave an apparently
+        // reviewable run.
+        const persisted = this.#deps.persistScaleAdmission!(scaleAdmission!);
+        if (persisted.phase !== "scale-running"
+          || !persisted.scaleAdmission
+          || persisted.scaleAdmission.admissionId !== scaleAdmission!.admissionId
+          || persisted.scaleAdmission.boundRunId !== undefined) {
+          throw new Error("Scale admission persistence did not acknowledge the exact unbound admission.");
+        }
       }
       const receipt = await this.#deps.client.spawn({
         agent: active.agent,
@@ -243,6 +313,24 @@ export class GodmodeMode {
       });
       if (this.#active !== active) throw new Error("Godmode active slot changed during faculty launch; refusing ambiguous ownership.");
       active.runId = receipt.runId;
+      if (normalized.faculty === "scale") {
+        try {
+          const bound = this.#deps.bindScaleAdmission!(scaleAdmission!.admissionId, receipt.runId);
+          if (bound.phase !== "scale-running"
+            || bound.scaleAdmission?.admissionId !== scaleAdmission!.admissionId
+            || bound.scaleAdmission.boundRunId !== receipt.runId) {
+            throw new Error("Scale admission bind callback did not acknowledge the exact run binding.");
+          }
+        } catch (error) {
+          try { await this.#deps.client.stop(receipt.runId, "Scale admission binding failed; the unbound run cannot be reviewed."); } catch { /* fail closed below */ }
+          this.#finish(active, "failed", {
+            kind: "scale-admission-bind-failure",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          this.#emit();
+          throw error;
+        }
+      }
       const earlyCompletion = this.#launchCompletions.get(receipt.runId);
       this.#launchCompletions.clear();
       if (earlyCompletion !== undefined) {
@@ -263,6 +351,8 @@ export class GodmodeMode {
         } else {
           if (active.faculty === "hand") {
             this.#persistWorkflowPhaseBestEffort(active, "blocked", "Hand launch failed before child ownership was established.", "workflow:blocked:hand-launch");
+          } else if (active.faculty === "scale") {
+            this.#persistWorkflowPhaseBestEffort(active, "blocked", "Scale launch failed before child ownership was established.", "workflow:blocked:scale-launch");
           }
           this.#disposeHandMonitor();
           this.#active = undefined;
@@ -566,9 +656,25 @@ export class GodmodeMode {
         this.#degrade(`Hand terminal workflow transition could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
         this.#persistWorkflowPhaseBestEffort(active, "blocked", "Hand terminal workflow transition failed closed.", "workflow:blocked:persistence-failure");
       }
+    } else if (active.faculty === "scale" && finalState !== "complete") {
+      // Scale failures are never review evidence. Fail closed before exposing
+      // the terminal result as available to the Primary controller.
+      try {
+        this.#persistWorkflowPhase(active, "blocked", "Scale did not complete successfully; the mandatory Scale gate is blocked.", "workflow:blocked:scale-terminal");
+      } catch (error) {
+        finalState = "failed";
+        finalResult = {
+          kind: "workflow-transition-persistence-failure",
+          reason: error instanceof Error ? error.message : String(error),
+          childResult: finalResult,
+        };
+        this.#degrade(`Scale terminal workflow transition could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
+        this.#persistWorkflowPhaseBestEffort(active, "blocked", "Scale terminal workflow transition failed closed.", "workflow:blocked:persistence-failure");
+      }
     }
     this.#lastRun = {
       runId: active.runId,
+      ...(active.admissionId !== undefined ? { admissionId: active.admissionId } : {}),
       faculty: active.faculty,
       state: finalState,
       ...(active.deadline ? { deadline: this.#snapshotDeadline(active.deadline) } : {}),
@@ -589,13 +695,14 @@ export class GodmodeMode {
   }
 
   #persistWorkflowPhase(active: ActiveRun, to: WorkflowPhase, reason: string, reference: string): void {
-    if (active.faculty !== "hand") return;
+    if (active.faculty !== "hand" && active.faculty !== "scale") return;
     if (!this.#deps.persistWorkflowTransition) throw new Error("Trusted workflow lifecycle persistence is unavailable.");
     this.#deps.persistWorkflowTransition(to, reason, reference);
   }
 
   #persistWorkflowPhaseBestEffort(active: ActiveRun, to: WorkflowPhase, reason: string, reference: string): void {
-    if (active.faculty !== "hand" || !this.#deps.persistWorkflowTransition) return;
+    if (active.faculty !== "hand" && active.faculty !== "scale") return;
+    if (!this.#deps.persistWorkflowTransition) return;
     try { this.#deps.persistWorkflowTransition(to, reason, reference); } catch (error) {
       this.#degrade(`Workflow failure transition could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -23,11 +23,34 @@ const audit = {
 };
 
 function advanceToReview(record = workflowRecord()) {
-  return ([
+  let current = ([
     "classified", "specified", "red-test-ready", "red-test-observed",
-    "hand-running", "hand-handoff", "primary-verifying", "evidence-ready",
-    "scale-running", "review-passed",
-  ] as const).reduce((current, to) => applyPhaseTransition(current, { ...audit, to }), record);
+    "hand-running", "hand-handoff", "primary-verifying",
+  ] as const).reduce((value, to) => applyPhaseTransition(value, { ...audit, to }), record);
+  current = {
+    ...current,
+    primaryInspection: {
+      id: "inspection-test", actor: "Primary", inspectedAt: audit.timestamp,
+      statusReference: "artifact:status", completeDiffReference: "artifact:diff", diffFingerprint: "a".repeat(64),
+      materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+      independentChecks: [{ id: "check", command: "npm test", result: "passed", evidenceReference: "artifact:test" }], residualRisks: [],
+    },
+  };
+  current = applyPhaseTransition(current, { ...audit, to: "evidence-ready" });
+  current = applyPhaseTransition(current, { ...audit, to: "scale-running" });
+  current = {
+    ...current,
+    scaleAdmission: {
+      admissionId: `scale-admission-${"c".repeat(64)}`, nonce: "c".repeat(64), workItemId: current.workItemId,
+      inspectionId: "inspection-test", diffFingerprint: "a".repeat(64), admittedAt: audit.timestamp, boundRunId: "scale-run-test",
+    },
+    scaleReview: {
+      id: "scale-review-test", runId: "scale-run-test", admissionId: `scale-admission-${"c".repeat(64)}`, reviewer: "Scale", completedAt: audit.timestamp,
+      freshContext: true, diffFingerprint: "a".repeat(64), evidenceReferences: ["artifact:status", "artifact:diff", "artifact:test"],
+      verdict: "pass", findings: [], residualUncertainty: "none",
+    },
+  };
+  return applyPhaseTransition(current, { ...audit, to: "review-passed" });
 }
 
 function customEntry(

@@ -256,6 +256,16 @@ function sanitizedRecord(record: WorkflowRecord): WorkflowRecord {
   });
   const validation = validateWorkflowRecord(value);
   if (!validation.ok) throw new Error(`Workflow record cannot be safely persisted: ${validation.reason}`);
+  // Phase 3 gate records are authority-bearing completeness evidence. Unlike
+  // optional prose, they may not be silently truncated or redacted by ledger
+  // sanitization: omission or alteration would manufacture a different gate.
+  for (const key of ["primaryInspection", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation"] as const) {
+    const original = record[key];
+    const persisted = (value as unknown as Record<string, unknown>)[key];
+    if (original !== undefined && !exactPersistedValue(persisted, original)) {
+      throw new Error(`Workflow ${key} cannot be safely persisted without altering gate evidence; blocked.`);
+    }
+  }
   return validation.record;
 }
 
@@ -1267,7 +1277,38 @@ export function projectWorkflowRecord(record: WorkflowRecord, asOf?: string): Wo
     || changedBySanitization(current.residualRisks)
     || changedBySanitization(current.tddWaiverReference)
     || changedBySanitization(current.scaleWaiverReference);
+  const phase3InspectionSummary = current.primaryInspection === undefined ? undefined : {
+    id: current.primaryInspection.id,
+    inspectedAt: current.primaryInspection.inspectedAt,
+    diffFingerprint: current.primaryInspection.diffFingerprint,
+    materiallyChangedPaths: current.primaryInspection.materiallyChangedPaths,
+    independentCheckIds: current.primaryInspection.independentChecks.map((check) => check.id),
+  };
+  const phase3AdmissionSummary = current.scaleAdmission === undefined ? undefined : {
+    admissionId: current.scaleAdmission.admissionId,
+    inspectionId: current.scaleAdmission.inspectionId,
+    diffFingerprint: current.scaleAdmission.diffFingerprint,
+    ...(current.scaleAdmission.boundRunId !== undefined ? { boundRunId: current.scaleAdmission.boundRunId } : {}),
+  };
+  const phase3ReviewSummary = current.scaleReview === undefined ? undefined : {
+    id: current.scaleReview.id,
+    runId: current.scaleReview.runId,
+    admissionId: current.scaleReview.admissionId,
+    completedAt: current.scaleReview.completedAt,
+    diffFingerprint: current.scaleReview.diffFingerprint,
+    verdict: current.scaleReview.verdict,
+    findingCount: current.scaleReview.findings.length,
+  };
   const optional: Array<[string, unknown]> = [
+    ...(phase3AdmissionSummary !== undefined
+      ? [["scaleAdmission", sanitizeLedgerValue(phase3AdmissionSummary)] as [string, unknown]]
+      : []),
+    ...(phase3InspectionSummary !== undefined
+      ? [["primaryInspection", sanitizeLedgerValue(phase3InspectionSummary)] as [string, unknown]]
+      : []),
+    ...(phase3ReviewSummary !== undefined
+      ? [["scaleReview", sanitizeLedgerValue(phase3ReviewSummary)] as [string, unknown]]
+      : []),
     ["goal", sanitizeLedgerValue(current.goal)],
     ...(current.unresolvedDecisions !== undefined
       ? [["unresolvedDecisions", sanitizeLedgerValue(current.unresolvedDecisions)] as [string, unknown]]
