@@ -7,7 +7,8 @@ import { Compile } from "typebox/compile";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPrimaryWorkflowController, WorkflowSchema } from "../../src/tools.ts";
 import { renderAssignment, validateDelegation } from "../../src/faculties.ts";
-import { appendWorkflowSnapshot, reconstructActiveSnapshot } from "../../src/session-ledger.ts";
+import { appendWorkflowSnapshot, reconstructActiveSnapshot, type LedgerSessionManager } from "../../src/session-ledger.ts";
+import { createWorkflowLifecycle } from "../../src/workflow-lifecycle.ts";
 import { applyPhaseTransition } from "../../src/workflow-state.ts";
 import { GodmodeMode } from "../../src/mode.ts";
 import { ModelLease } from "../../src/model-lease.ts";
@@ -55,24 +56,51 @@ function checkout(): { root: string; source: string } {
   return { root, source };
 }
 
-function controller(root: string) {
+function controller(root: string, initialRecord?: WorkflowRecord, priorRecords: WorkflowRecord[] = []) {
   const manager = SessionManager.create(root, join(root, "sessions"));
-  let record: WorkflowRecord | undefined;
+  for (const prior of priorRecords) {
+    appendWorkflowSnapshot(
+      { appendEntry: (customType, data) => { manager.appendCustomEntry(customType, data); } },
+      manager,
+      prior,
+      "2026-09-04T00:58:59.000Z",
+    );
+  }
+  if (initialRecord) {
+    appendWorkflowSnapshot(
+      { appendEntry: (customType, data) => { manager.appendCustomEntry(customType, data); } },
+      manager,
+      initialRecord,
+      "2026-09-04T00:59:59.000Z",
+    );
+  }
+  let appendCount = 0;
+  let record: WorkflowRecord | undefined = initialRecord;
   const instance = createPrimaryWorkflowController({
-    pi: { appendEntry: (customType, data) => { manager.appendCustomEntry(customType, data); } },
+    pi: { appendEntry: (customType, data) => { appendCount += 1; manager.appendCustomEntry(customType, data); } },
     getSessionManager: () => manager,
     getWorkflowRecord: () => record,
     setWorkflowRecord: (next) => { record = next; },
     cwd: () => root,
     now: () => "2026-09-04T01:00:00.000Z",
   });
-  return { manager, instance, getRecord: () => record };
+  return { manager, instance, getRecord: () => record, getAppendCount: () => appendCount };
 }
 
-function specify(instance: ReturnType<typeof createPrimaryWorkflowController>, classification: "feature" | "bugfix" | "documentation/configuration") {
+function blockedRecord(workItemId = "blocked-old"): WorkflowRecord {
+  return applyPhaseTransition(workflowRecord({ workItemId }), {
+    actor: "Primary",
+    timestamp: "2026-09-04T00:59:59.000Z",
+    reason: "The prior bounded attempt cannot continue.",
+    reference: `run:${workItemId}`,
+    to: "blocked",
+  });
+}
+
+function specify(instance: ReturnType<typeof createPrimaryWorkflowController>, classification: "feature" | "bugfix" | "documentation/configuration", workItemId = `${classification}-1`) {
   return instance.execute({
     action: "specify",
-    workItemId: `${classification}-1`,
+    workItemId,
     classification,
     goal: "An actor can observe the approved behavior through the named interface under the packet constraints.",
     requirementIds: ["FR-1"],
@@ -84,6 +112,347 @@ function specify(instance: ReturnType<typeof createPrimaryWorkflowController>, c
     authorityConstraints: ["Hand may change only the narrowed mutation paths and must preserve the immutable red test."],
   });
 }
+
+test("a valid blocked packet is superseded only by a fresh distinct work item", () => {
+  const { root } = checkout();
+  const blocked = blockedRecord();
+  const runtime = controller(root, blocked);
+  const blockedLeaf = runtime.manager.getLeafEntry();
+  assert(blockedLeaf);
+
+  const result = specify(runtime.instance, "bugfix");
+
+  assert.equal(result.workItemId, "bugfix-1");
+  assert.equal(result.phase, "red-test-ready");
+  assert.equal(runtime.getRecord()?.workItemId, "bugfix-1");
+  const active = reconstructActiveSnapshot(runtime.manager.getBranch(), runtime.manager.getSessionId(), "bugfix-1");
+  assert.equal(active.status, "ok");
+  assert.equal(active.status === "ok" ? active.snapshot.record.phase : undefined, "red-test-ready");
+  assert.equal(active.status === "ok" ? active.snapshot.generation : undefined, 1);
+  assert.equal(active.status === "ok" ? active.snapshot.predecessorEntryId : undefined, null);
+  const activeEntry = runtime.manager.getBranch().find((entry) => entry.id === active.entryId);
+  assert.equal(activeEntry?.parentId, blockedLeaf.id, "the fresh root remains on the blocked packet's append branch");
+  const prior = reconstructActiveSnapshot(runtime.manager.getBranch(), runtime.manager.getSessionId(), "blocked-old");
+  assert.equal(prior.status, "ok");
+  assert.equal(prior.status === "ok" ? prior.snapshot.record.phase : undefined, "blocked");
+  assert.equal(runtime.getAppendCount(), 1, "a valid supersession performs exactly one append");
+});
+
+test("lifecycle recovery selects the fresh packet and leaves the blocked predecessor inert", () => {
+  const { root } = checkout();
+  const runtime = controller(root, blockedRecord());
+  specify(runtime.instance, "bugfix");
+
+  const restored: Array<WorkflowRecord | undefined> = [];
+  const views: unknown[] = [];
+  const blockedReasons: Array<string | undefined> = [];
+  const lifecycle = createWorkflowLifecycle({
+    pi: { appendEntry: () => { throw new Error("startup recovery must not append"); } },
+    setWorkflowRecord: (record) => { restored.push(record); },
+    setWorkflowView: (view) => { views.push(view); },
+    setWorkflowBlockedReason: (reason) => { blockedReasons.push(reason); },
+    refresh: () => {},
+  });
+  lifecycle.sessionStart({ type: "session_start", reason: "startup" } as never, { sessionManager: runtime.manager } as never);
+
+  assert.equal(restored.at(-1)?.workItemId, "bugfix-1");
+  assert.equal(restored.at(-1)?.phase, "red-test-ready");
+  assert.notEqual(views.at(-1), undefined);
+  assert.equal(blockedReasons.at(-1), undefined);
+  const prior = reconstructActiveSnapshot(runtime.manager.getBranch(), runtime.manager.getSessionId(), "blocked-old");
+  assert.equal(prior.status, "ok");
+  assert.equal(prior.status === "ok" ? prior.snapshot.record.phase : undefined, "blocked");
+  assert.equal(runtime.getAppendCount(), 1, "recovery is read-only after supersession");
+});
+
+test("same and historical work-item IDs fail closed without appending", () => {
+  const same = controller(checkout().root, blockedRecord("bugfix-1"));
+  assert.throws(() => specify(same.instance, "bugfix"), /distinct|fresh/i);
+  assert.equal(same.getAppendCount(), 0, "same-ID supersession must not append");
+
+  const historical = controller(
+    checkout().root,
+    blockedRecord(),
+    [workflowRecord({ workItemId: "historical-1" })],
+  );
+  assert.throws(() => specify(historical.instance, "bugfix", "historical-1"), /fresh|history/i);
+  assert.equal(historical.getAppendCount(), 0, "historical-ID supersession must not append");
+});
+
+test("non-blocked and conflicting persisted authorities fail closed without appending", () => {
+  const draft = controller(checkout().root, workflowRecord({ workItemId: "draft-1" }));
+  assert.throws(() => specify(draft.instance, "bugfix"), /blocked|packet|supersed/i);
+  assert.equal(draft.getAppendCount(), 0, "draft replacement must not append");
+
+  const activeRecord = applyPhaseTransition(blockedRecord("active-1"), {
+    actor: "Primary",
+    timestamp: "2026-09-04T01:00:00.000Z",
+    reason: "The active packet is not eligible for replacement.",
+    reference: "run:active-1",
+    to: "red-test-ready",
+  });
+  const active = controller(checkout().root, activeRecord);
+  assert.throws(() => specify(active.instance, "bugfix"), /blocked|packet|supersed/i);
+  assert.equal(active.getAppendCount(), 0, "active replacement must not append");
+
+  const inconsistent = blockedRecord();
+  const runtime = controller(checkout().root, inconsistent);
+  inconsistent.goal = "A runtime-only authority that is not persisted.";
+  assert.throws(() => specify(runtime.instance, "bugfix"), /conflict|authority|blocked/i);
+  assert.equal(runtime.getAppendCount(), 0, "conflicting runtime authority must not append");
+
+  const malformed = controller(checkout().root, blockedRecord());
+  malformed.manager.appendCustomEntry("godmode-workflow-ledger", { malformed: true });
+  assert.throws(() => specify(malformed.instance, "bugfix"), /malformed|persisted|blocked/i);
+  assert.equal(malformed.getAppendCount(), 0, "malformed persisted authority must not append");
+});
+
+test("blocked supersession rejects accessor-backed persisted authority without appending", () => {
+  const runtime = controller(checkout().root, blockedRecord());
+  const ledgerEntry = runtime.manager.getBranch().find((entry) => entry.type === "custom" && entry.customType === "godmode-workflow-ledger");
+  assert(ledgerEntry && ledgerEntry.type === "custom");
+  const persistedData = ledgerEntry.data;
+  let getterReads = 0;
+  Object.defineProperty(ledgerEntry, "data", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      getterReads += 1;
+      return persistedData;
+    },
+  });
+
+  assert.throws(() => specify(runtime.instance, "bugfix"), /authority|blocked|recovery/i);
+  assert.equal(getterReads, 0, "accessor-backed persisted authority must be rejected without invoking the getter");
+  assert.equal(runtime.getAppendCount(), 0, "accessor-backed persisted authority must not append");
+});
+
+test("blocked supersession rejects accessor-backed runtime authority without appending", () => {
+  const blocked = blockedRecord();
+  const runtime = controller(checkout().root, blocked);
+  const persistedGoal = blocked.goal;
+  let getterReads = 0;
+  Object.defineProperty(blocked, "goal", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      getterReads += 1;
+      return persistedGoal;
+    },
+  });
+
+  assert.throws(() => specify(runtime.instance, "bugfix"), /authority|blocked|recovery/i);
+  assert.equal(getterReads, 0, "runtime accessor-backed authority must be rejected before validation reads it");
+  assert.equal(runtime.getAppendCount(), 0, "runtime accessor-backed authority must not append");
+});
+
+test("blocked supersession validates the owned runtime clone without reading the original", () => {
+  const blocked = blockedRecord();
+  let runtimeReads = 0;
+  const runtimeRecord = new Proxy(blocked, {
+    get(target, property, receiver) {
+      runtimeReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const runtime = controller(checkout().root, runtimeRecord);
+  runtimeReads = 0;
+
+  const result = specify(runtime.instance, "bugfix");
+
+  assert.equal(result.workItemId, "bugfix-1");
+  assert.equal(runtimeReads, 0, "validation and proof must use the owned clone, not the caller-owned record");
+  assert.equal(runtime.getAppendCount(), 1);
+});
+
+test("a supersession append is accepted only after exact leaf acknowledgement", () => {
+  const { root } = checkout();
+  const blocked = blockedRecord();
+  const manager = SessionManager.create(root, join(root, "sessions"));
+  appendWorkflowSnapshot(
+    { appendEntry: (customType, data) => { manager.appendCustomEntry(customType, data); } },
+    manager,
+    blocked,
+    "2026-09-04T00:59:59.000Z",
+  );
+  let record: WorkflowRecord | undefined = blocked;
+  let appendCount = 0;
+  const instance = createPrimaryWorkflowController({
+    pi: { appendEntry: () => { appendCount += 1; } },
+    getSessionManager: () => manager,
+    getWorkflowRecord: () => record,
+    setWorkflowRecord: (next) => { record = next; },
+    cwd: () => root,
+    now: () => "2026-09-04T01:00:00.000Z",
+  });
+
+  assert.throws(() => specify(instance, "bugfix"), /acknowledge|leaf|append/i);
+  assert.equal(appendCount, 1, "the attempted append is not mistaken for acknowledgement");
+  assert.equal(record, blocked, "runtime authority stays unchanged after acknowledgement failure");
+  const fresh = reconstructActiveSnapshot(manager.getBranch(), manager.getSessionId(), "bugfix-1");
+  assert.equal(fresh.status, "absent");
+});
+
+test("blocked supersession rejects an oversized active branch before any append", () => {
+  const { root } = checkout();
+  const blocked = applyPhaseTransition(workflowRecord({ workItemId: "blocked-old" }), {
+    actor: "Primary",
+    timestamp: "2026-09-04T00:59:59.000Z",
+    reason: "The prior bounded attempt cannot continue.",
+    reference: "run:blocked-old",
+    to: "blocked",
+  });
+  const branch = Array.from({ length: 1_025 }, (_, index) => ({
+    id: `entry-${index}`,
+    parentId: index === 0 ? null : `entry-${index - 1}`,
+    type: "message",
+    timestamp: "2026-09-04T00:59:59.000Z",
+  }));
+  let branchEntryReads = 0;
+  const hostileBranch = new Proxy(branch, {
+    get(target, property, receiver) {
+      if (/^\d+$/u.test(String(property))) branchEntryReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  let appendCount = 0;
+  const manager = {
+    getSessionId: () => "session-1",
+    getBranch: () => hostileBranch,
+    getLeafEntry: () => branch.at(-1),
+  } as unknown as LedgerSessionManager;
+  const instance = createPrimaryWorkflowController({
+    pi: { appendEntry: () => { appendCount += 1; } },
+    getSessionManager: () => manager,
+    getWorkflowRecord: () => blocked,
+    setWorkflowRecord: () => {},
+    cwd: () => root,
+    now: () => "2026-09-04T01:00:00.000Z",
+  });
+
+  assert.throws(() => specify(instance, "bugfix"), /recovery|blocked|bounded/i);
+  assert.equal(branchEntryReads, 0, "oversized branches are rejected before entry iteration");
+  assert.equal(appendCount, 0);
+});
+
+test("blocked supersession fails closed when the active branch swaps after proof", () => {
+  const { root } = checkout();
+  const backing = SessionManager.create(root, join(root, "sessions"));
+  const blocked = blockedRecord();
+  appendWorkflowSnapshot(
+    { appendEntry: (customType, data) => { backing.appendCustomEntry(customType, data); } },
+    backing,
+    blocked,
+    "2026-09-04T00:59:59.000Z",
+  );
+  const capturedBranch = backing.getBranch();
+  const capturedLeaf = capturedBranch.at(-1);
+  assert(capturedLeaf);
+  const swappedBranch = capturedBranch.map((entry, index) => index === capturedBranch.length - 1
+    ? { ...entry, id: `${entry.id}-swapped` }
+    : entry);
+  let branchReads = 0;
+  const manager: LedgerSessionManager = {
+    getSessionId: () => backing.getSessionId(),
+    getBranch: () => {
+      branchReads += 1;
+      return branchReads >= 2 ? swappedBranch : capturedBranch;
+    },
+    getLeafEntry: () => branchReads >= 2 ? swappedBranch.at(-1) : capturedLeaf,
+    getHeader: () => backing.getHeader(),
+  };
+  let appendCount = 0;
+  const instance = createPrimaryWorkflowController({
+    pi: { appendEntry: () => { appendCount += 1; } },
+    getSessionManager: () => manager,
+    getWorkflowRecord: () => blocked,
+    setWorkflowRecord: () => {},
+    cwd: () => root,
+    now: () => "2026-09-04T01:00:00.000Z",
+  });
+
+  assert.throws(() => specify(instance, "bugfix"), /append|authority|changed|blocked/i);
+  assert.equal(appendCount, 0, "a swapped branch must be rejected before append");
+});
+
+test("a forked blocked packet can be superseded by a fresh item and recovered after reload", () => {
+  const { root } = checkout();
+  const parent = SessionManager.create(root, join(root, "sessions"));
+  const blocked = blockedRecord();
+  appendWorkflowSnapshot(
+    { appendEntry: (customType, data) => { parent.appendCustomEntry(customType, data); } },
+    parent,
+    blocked,
+    "2026-09-04T00:59:59.000Z",
+  );
+  parent.appendMessage({
+    role: "assistant",
+    content: [],
+    timestamp: Date.now(),
+    api: "fixture",
+    provider: "fixture",
+    model: "fixture",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop",
+  });
+  const parentFile = parent.getSessionFile();
+  const parentLeaf = parent.getLeafEntry();
+  assert(parentFile);
+  assert(parentLeaf);
+  const forkFile = parent.createBranchedSession(parentLeaf.id);
+  assert(forkFile);
+  const fork = SessionManager.open(forkFile);
+  let restored: WorkflowRecord | undefined;
+  const blockedReasons: string[] = [];
+  createWorkflowLifecycle({
+    pi: { appendEntry: (customType, data) => { fork.appendCustomEntry(customType, data); } },
+    setWorkflowRecord: (record) => { restored = record; },
+    setWorkflowView: () => {},
+    setWorkflowBlockedReason: (reason) => { if (reason) blockedReasons.push(reason); },
+    refresh: () => {},
+    now: () => "2026-09-04T01:00:00.000Z",
+  }).sessionStart({
+    type: "session_start",
+    reason: "fork",
+    previousSessionFile: parentFile,
+  } as never, { sessionManager: fork } as never);
+
+  assert.equal(blockedReasons.length, 0);
+  assert(restored);
+  assert.equal(restored.workItemId, blocked.workItemId);
+  assert.equal(restored.phase, "blocked");
+  let runtimeRecord: WorkflowRecord | undefined = restored;
+  let appendCount = 0;
+  const instance = createPrimaryWorkflowController({
+    pi: { appendEntry: (customType, data) => { appendCount += 1; fork.appendCustomEntry(customType, data); } },
+    getSessionManager: () => fork,
+    getWorkflowRecord: () => runtimeRecord,
+    setWorkflowRecord: (record) => { runtimeRecord = record; },
+    cwd: () => root,
+    now: () => "2026-09-04T01:01:00.000Z",
+  });
+
+  const result = specify(instance, "bugfix", "fork-fresh-1");
+  assert.equal(result.workItemId, "fork-fresh-1");
+  assert.equal(result.phase, "red-test-ready");
+  assert.equal(appendCount, 1);
+
+  const reopened = SessionManager.open(forkFile);
+  const recoveryContext = {
+    sessionId: reopened.getHeader()?.id,
+    parentSessionFile: reopened.getHeader()?.parentSession,
+  };
+  const fresh = reconstructActiveSnapshot(reopened.getBranch(), reopened.getSessionId(), "fork-fresh-1", recoveryContext);
+  assert.equal(fresh.status, "ok");
+  if (fresh.status === "ok") {
+    assert.equal(fresh.snapshot.record.phase, "red-test-ready");
+    assert.equal(fresh.snapshot.generation, 1);
+    assert.equal(fresh.snapshot.predecessorEntryId, null);
+  }
+  const prior = reconstructActiveSnapshot(reopened.getBranch(), reopened.getSessionId(), blocked.workItemId, recoveryContext);
+  assert.equal(prior.status, "ok");
+  assert.equal(prior.status === "ok" ? prior.snapshot.record.phase : undefined, "blocked");
+});
 
 test("normal Primary controller persists fresh feature and bugfix packets through red admission", () => {
   for (const classification of ["feature", "bugfix"] as const) {

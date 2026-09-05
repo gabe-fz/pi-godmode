@@ -32,6 +32,8 @@ Every snapshot must carry the session ID, work-item ID, workflow schema version,
 
 The bounded payload may additionally contain a sanitized diff/status fingerprint, current work-item phases and roadmap statuses, last accepted capsule reference, and known blockers. It is a recovery hint, not permission to accept stale work; the Primary compares it with the current checkout before use.
 
+A blocked snapshot has one narrow supersession path: `godmode_workflow` may append a fresh packet only when persisted active-branch reconstruction independently proves that the current runtime record is the same valid `blocked` snapshot and the replacement has a distinct work-item ID absent from persisted history. The append creates a new generation-one snapshot for the fresh item; it does not rewrite or reuse the blocked record. Malformed entries, conflicting or absent authority, any non-blocked/active/terminal record, same-ID requests, and unprovable lineage fail closed without appending. Reconstruction then selects the fresh item while retaining prior blocked snapshots as inert append-only history.
+
 A branch snapshot must not store full diffs, transcripts, command output, secrets, or every historical run. If no active work exists, the snapshot can be absent or a compact last-known summary.
 
 ### Raw evidence and artifacts

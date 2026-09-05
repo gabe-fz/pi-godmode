@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { resolve } from "node:path";
@@ -9,6 +9,7 @@ import {
   appendWorkflowSnapshot,
   createCompletionCapsule,
   LEDGER_CUSTOM_TYPE,
+  reconstructActiveSnapshot,
   type LedgerSessionManager,
   type LedgerAppender,
 } from "./session-ledger.ts";
@@ -40,6 +41,7 @@ import type {
   ScaleReview,
   ScaleWaiver,
   ScaleAdmission,
+  LedgerRecoveryContext,
 } from "./types.ts";
 import { MAX_SUPERVISOR_EXTENSION_MS } from "./deadlines.ts";
 import { boundedStatus } from "./status.ts";
@@ -310,6 +312,12 @@ export type DoctorParams = Static<typeof DoctorSchema>;
 export type WorkflowParams = Static<typeof WorkflowSchema>;
 
 const WORKFLOW_REQUIREMENT_ID = /^FR-[1-9]\d*$/u;
+/**
+ * Workflow authoring must inspect only a bounded active SessionManager branch.
+ * Keep this cap aligned with the ledger/lifecycle recovery boundary and copy
+ * the branch before examining any persisted workflow identity.
+ */
+const MAX_WORKFLOW_BRANCH_ENTRIES = 1_024;
 const WORKFLOW_ACTOR_FIELDS = new Set([
   "actor", "author", "approver", "hash", "testContentHash", "timestamp", "observedAt",
   "phase", "history", "record", "evidence", "shell", "model", "cwd", "git", "acceptance",
@@ -319,6 +327,17 @@ const WORKFLOW_ACTOR_FIELDS = new Set([
   "nextGate", "blockers", "status", "to", "inspectionId", "adapter", "adapterVersion", "redactionStatus",
   "retentionClass", "expiresAt", "capturedAt", "decidedAt", "artifactReferences", "result",
 ]);
+const WORKFLOW_RECORD_REQUIRED_FIELDS = [
+  "workItemId", "classification", "goal", "requirementIds", "nonGoals", "expectedPaths", "phase",
+  "roadmap", "history", "nextGate", "blockers", "residualRisks", "evidence",
+] as const;
+const WORKFLOW_RECORD_OPTIONAL_FIELDS = [
+  "functionalRequirements", "packetAuthor", "acceptanceChecks", "authorityConstraints", "redTestEvidence",
+  "tddWaiver", "unresolvedDecisions", "redTestReference", "tddWaiverReference", "scaleVerdict",
+  "scaleWaiverReference", "changedScopeSummary", "latestCapsuleReference", "completionCapsulePolicy",
+  "completionCapsule", "primaryInspection", "interfaceEvidencePolicy", "acceptanceCheckSpecs",
+  "applicabilityDecisions", "interfaceEvidence", "scaleAdmission", "scaleReview", "scaleWaiver", "remediation",
+] as const;
 
 function workflowObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -398,6 +417,376 @@ function assertWorkflowActionFields(value: Record<string, unknown>, allowed: rea
   for (const field of Object.keys(value)) {
     if (!permitted.has(field)) throw new Error(`Workflow field ${field} is not valid for this action.`);
   }
+}
+
+/** Read a persisted authority field without invoking an accessor or falling
+ * back to a prototype value. Public SessionManager entries are plain parsed
+ * records, so an accessor-backed field is malformed authority. */
+function ownDataProperty(value: object, key: string, required = true): { present: boolean; value?: unknown } {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) {
+    if (required) throw new Error(`workflow authority field ${key} is missing`);
+    return { present: false };
+  }
+  if (!("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) {
+    throw new Error(`workflow authority field ${key} is accessor-backed`);
+  }
+  return { present: true, value: descriptor.value };
+}
+
+/** Clone only bounded persisted values used by workflow recovery. This
+ * prevents an in-place host mutation from changing the branch captured by
+ * proof while keeping arbitrary non-ledger message payloads out of scope. */
+function cloneBoundedWorkflowValue(value: unknown, depth = 0, seen = new WeakSet<object>(), budget = { remaining: 32_768 }): unknown {
+  if (budget.remaining-- <= 0) throw new Error("workflow branch payload exceeds the bounded comparison limit");
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "string" && Buffer.byteLength(value, "utf8") > 128 * 1024) throw new Error("workflow branch value exceeds the bounded comparison limit");
+    if (typeof value === "function" || typeof value === "symbol") throw new Error("workflow branch contains an unsupported value");
+    return value;
+  }
+  if (depth >= 8 || seen.has(value)) throw new Error("workflow branch payload is cyclic or too deeply nested");
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (!lengthDescriptor || lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined || !("value" in lengthDescriptor)) {
+        throw new Error("workflow branch array length is accessor-backed");
+      }
+      const length = lengthDescriptor.value;
+      if (!Number.isSafeInteger(length) || length < 0 || length > 64) throw new Error("workflow branch collection exceeds the bounded comparison limit");
+      const output: unknown[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) throw new Error("workflow branch array is malformed");
+        output.push(cloneBoundedWorkflowValue(descriptor.value, depth + 1, seen, budget));
+      }
+      return Object.freeze(output);
+    }
+    const keys = Object.keys(value);
+    if (keys.length > 64) throw new Error("workflow branch object exceeds the bounded comparison limit");
+    const output: Record<string, unknown> = {};
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) throw new Error("workflow branch object is malformed");
+      output[key] = cloneBoundedWorkflowValue(descriptor.value, depth + 1, seen, budget);
+    }
+    return Object.freeze(output);
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/** Clone runtime workflow authority before validation. The validator must never
+ * read the caller-owned record after this boundary: inherited values are
+ * omitted, accessor-backed values are rejected, and the returned tree is
+ * bounded and frozen. */
+function assertAccessorFreeWorkflowRecord(value: unknown): WorkflowRecord {
+  if (!workflowObject(value)) {
+    throw new Error("Workflow runtime authority is accessor-backed or exceeds the bounded comparison limit; supersession is blocked.");
+  }
+  try {
+    for (const field of WORKFLOW_RECORD_REQUIRED_FIELDS) ownDataProperty(value, field);
+    for (const field of WORKFLOW_RECORD_OPTIONAL_FIELDS) ownDataProperty(value, field, false);
+    const clone = cloneBoundedWorkflowValue(value);
+    if (!workflowObject(clone)) throw new Error("workflow authority clone is malformed");
+    return clone as unknown as WorkflowRecord;
+  } catch {
+    throw new Error("Workflow runtime authority is accessor-backed or exceeds the bounded comparison limit; supersession is blocked.");
+  }
+}
+
+function copyBoundedWorkflowEntry(value: unknown): SessionEntry | undefined {
+  if (value === undefined) return undefined;
+  if (!workflowObject(value)) throw new Error("active branch contains a malformed entry");
+  const id = ownDataProperty(value, "id");
+  const parentId = ownDataProperty(value, "parentId");
+  const type = ownDataProperty(value, "type");
+  const timestamp = ownDataProperty(value, "timestamp");
+  const snapshot: Record<string, unknown> = {
+    id: id.value,
+    parentId: parentId.value,
+    type: type.value,
+    timestamp: timestamp.value,
+  };
+  if (type.value === "custom") {
+    const customType = ownDataProperty(value, "customType");
+    snapshot.customType = customType.value;
+    if (customType.value === LEDGER_CUSTOM_TYPE) {
+      const data = ownDataProperty(value, "data", false);
+      if (data.present) snapshot.data = cloneBoundedWorkflowValue(data.value);
+    }
+  }
+  return Object.freeze(snapshot) as unknown as SessionEntry;
+}
+
+/** Capture a bounded branch before reading any persisted workflow payload. */
+function copyBoundedWorkflowBranch(manager: LedgerSessionManager): readonly SessionEntry[] {
+  let branch: readonly SessionEntry[];
+  try {
+    branch = manager.getBranch();
+    if (!Array.isArray(branch)) throw new Error("active branch is not an array");
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(branch, "length");
+    if (!lengthDescriptor || lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined || !("value" in lengthDescriptor)) {
+      throw new Error("active branch length is accessor-backed");
+    }
+    const entryCount = lengthDescriptor.value;
+    if (!Number.isSafeInteger(entryCount) || entryCount < 0 || entryCount > MAX_WORKFLOW_BRANCH_ENTRIES) {
+      throw new Error("active branch exceeds the bounded recovery limit");
+    }
+    const copy: SessionEntry[] = [];
+    for (let index = 0; index < entryCount; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(branch, String(index));
+      if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+        throw new Error("active branch entry is accessor-backed or missing");
+      }
+      const entry = copyBoundedWorkflowEntry(descriptor.value);
+      if (!entry) throw new Error("active branch contains a malformed entry");
+      copy.push(entry);
+    }
+    return Object.freeze(copy);
+  } catch {
+    throw new Error("Unable to prove the persisted blocked workflow authority; recovery is blocked.");
+  }
+}
+
+/**
+ * Compare canonical records without relying on property insertion order. The
+ * persisted ledger is the independent authority for recovery, so a runtime
+ * record with the same ID and phase is not sufficient proof: every bounded
+ * field must match before blocked-packet supersession can proceed.
+ */
+function exactWorkflowValue(left: unknown, right: unknown, seen = new Map<object, object>(), budget = { remaining: 16_384 }): boolean {
+  try {
+    if (budget.remaining-- <= 0) return false;
+    const leftObject = typeof left === "object" && left !== null;
+    const rightObject = typeof right === "object" && right !== null;
+    if (!leftObject || !rightObject) return Object.is(left, right);
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right)) return false;
+      const leftLength = Object.getOwnPropertyDescriptor(left, "length");
+      const rightLength = Object.getOwnPropertyDescriptor(right, "length");
+      if (!leftLength || !rightLength
+        || leftLength.get !== undefined || leftLength.set !== undefined
+        || rightLength.get !== undefined || rightLength.set !== undefined
+        || !("value" in leftLength) || !("value" in rightLength)
+        || leftLength.value !== rightLength.value
+        || !Number.isSafeInteger(leftLength.value) || leftLength.value < 0 || leftLength.value > 64) return false;
+      for (let index = 0; index < leftLength.value; index += 1) {
+        const leftDescriptor = Object.getOwnPropertyDescriptor(left, String(index));
+        const rightDescriptor = Object.getOwnPropertyDescriptor(right, String(index));
+        if (!leftDescriptor || !rightDescriptor
+          || leftDescriptor.get !== undefined || leftDescriptor.set !== undefined
+          || rightDescriptor.get !== undefined || rightDescriptor.set !== undefined
+          || !("value" in leftDescriptor) || !("value" in rightDescriptor)
+          || !exactWorkflowValue(leftDescriptor.value, rightDescriptor.value, seen, budget)) return false;
+      }
+      return true;
+    }
+    if (seen.has(left)) return seen.get(left) === right;
+    seen.set(left, right);
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (leftKeys.length > 64 || rightKeys.length > 64 || leftKeys.length !== rightKeys.length || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
+    for (const key of leftKeys) {
+      const leftDescriptor = Object.getOwnPropertyDescriptor(left, key);
+      const rightDescriptor = Object.getOwnPropertyDescriptor(right, key);
+      if (!leftDescriptor || !rightDescriptor
+        || leftDescriptor.get !== undefined || leftDescriptor.set !== undefined
+        || rightDescriptor.get !== undefined || rightDescriptor.set !== undefined
+        || !("value" in leftDescriptor) || !("value" in rightDescriptor)
+        || !exactWorkflowValue(leftDescriptor.value, rightDescriptor.value, seen, budget)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Compare only branch lineage fields and persisted workflow payloads. Message
+ * bodies are not authority for this append and are intentionally not walked. */
+function sameWorkflowBranchEntry(left: unknown, right: unknown): boolean {
+  try {
+    const leftEntry = copyBoundedWorkflowEntry(left);
+    const rightEntry = copyBoundedWorkflowEntry(right);
+    if (!leftEntry || !rightEntry) return leftEntry === rightEntry;
+    return exactWorkflowValue(leftEntry, rightEntry);
+  } catch {
+    return false;
+  }
+}
+
+type WorkflowHeaderProjection = { id?: string; parentSession?: string } | null | undefined;
+
+interface WorkflowAppendAuthority {
+  manager: LedgerSessionManager;
+  sessionId: string;
+  branch: readonly SessionEntry[];
+  leaf: SessionEntry | undefined;
+  hasHeader: boolean;
+  header: WorkflowHeaderProjection;
+}
+
+function workflowHeaderProjection(manager: LedgerSessionManager): { hasHeader: boolean; header: WorkflowHeaderProjection } {
+  if (!manager.getHeader) return { hasHeader: false, header: undefined };
+  const header = manager.getHeader();
+  if (header === null || header === undefined) return { hasHeader: true, header };
+  if (!workflowObject(header) || Array.isArray(header)) throw new Error("active session header is malformed");
+  const id = ownDataProperty(header, "id", false);
+  const parentSession = ownDataProperty(header, "parentSession", false);
+  if (id.value !== undefined && typeof id.value !== "string") throw new Error("active session header ID is malformed");
+  if (parentSession.value !== undefined && typeof parentSession.value !== "string") throw new Error("active parent session identity is malformed");
+  return {
+    hasHeader: true,
+    header: {
+      ...(id.value !== undefined ? { id: id.value } : {}),
+      ...(parentSession.value !== undefined ? { parentSession: parentSession.value } : {}),
+    },
+  };
+}
+
+/** Capture every pre-append authority input once. The returned branch is an
+ * owned bounded copy and is the branch used for both proof and append. */
+function captureWorkflowAppendAuthority(manager: LedgerSessionManager): WorkflowAppendAuthority {
+  try {
+    const sessionId = manager.getSessionId();
+    const branch = copyBoundedWorkflowBranch(manager);
+    const leaf = copyBoundedWorkflowEntry(manager.getLeafEntry());
+    const header = workflowHeaderProjection(manager);
+    return Object.freeze({ manager, sessionId, branch, leaf, ...header });
+  } catch {
+    throw new Error("Unable to prove the persisted blocked workflow authority; recovery is blocked.");
+  }
+}
+
+function authorityRecoveryContext(authority: WorkflowAppendAuthority): LedgerRecoveryContext | undefined {
+  const header = authority.header;
+  return header === null || header === undefined ? undefined : {
+    ...(typeof header.id === "string" ? { sessionId: header.id } : {}),
+    ...(typeof header.parentSession === "string" ? { parentSessionFile: header.parentSession } : {}),
+  };
+}
+
+function sameWorkflowAuthorityValue(left: unknown, right: unknown): boolean {
+  try {
+    return exactWorkflowValue(left, right);
+  } catch {
+    return false;
+  }
+}
+
+/** Check the live manager immediately before the append against the authority
+ * captured during proof. This is a bound guard, not an independent recheck. */
+function assertLiveWorkflowAuthority(authority: WorkflowAppendAuthority): void {
+  try {
+    if (authority.manager.getSessionId() !== authority.sessionId) throw new Error("session identity changed");
+    const branch = copyBoundedWorkflowBranch(authority.manager);
+    const entryCount = branch.length;
+    if (entryCount !== authority.branch.length || entryCount > MAX_WORKFLOW_BRANCH_ENTRIES) {
+      throw new Error("active branch changed");
+    }
+    for (let index = 0; index < entryCount; index += 1) {
+      if (!sameWorkflowBranchEntry(branch[index], authority.branch[index])) throw new Error("active branch changed");
+    }
+    const leaf = copyBoundedWorkflowEntry(authority.manager.getLeafEntry());
+    if (!sameWorkflowBranchEntry(leaf, authority.leaf)) throw new Error("active leaf changed");
+    if (authority.hasHeader) {
+      const liveHeader = workflowHeaderProjection(authority.manager);
+      if (!liveHeader.hasHeader || !sameWorkflowAuthorityValue(liveHeader.header, authority.header)) throw new Error("active session header changed");
+    }
+  } catch {
+    throw new Error("The pre-append workflow authority changed; supersession is blocked.");
+  }
+}
+
+/** The append adapter gets the captured prefix for pre-append validation, but
+ * only acknowledges a live leaf after proving that prefix survived the append. */
+function managerBoundToWorkflowAuthority(authority: WorkflowAppendAuthority): LedgerSessionManager {
+  let leafReads = 0;
+  return {
+    getSessionId: () => authority.sessionId,
+    getBranch: () => authority.branch,
+    getLeafEntry: () => {
+      leafReads += 1;
+      if (leafReads === 1) return authority.leaf;
+      try {
+        const branch = copyBoundedWorkflowBranch(authority.manager);
+        const entryCount = branch.length;
+        if (entryCount !== authority.branch.length + 1 || entryCount > MAX_WORKFLOW_BRANCH_ENTRIES) return undefined;
+        for (let index = 0; index < authority.branch.length; index += 1) {
+          if (!sameWorkflowBranchEntry(branch[index], authority.branch[index])) return undefined;
+        }
+        return copyBoundedWorkflowEntry(authority.manager.getLeafEntry());
+      } catch {
+        return undefined;
+      }
+    },
+    ...(authority.hasHeader ? { getHeader: () => authority.header ?? null } : {}),
+  };
+}
+
+/**
+ * Independently prove that the active branch's current authority is a valid
+ * blocked record before admitting a fresh work item. This deliberately walks
+ * every ledger work-item identity: a malformed or conflicting snapshot for a
+ * different identity must not become an escape hatch merely because the
+ * in-memory record points at the older item.
+ */
+function proveBlockedSupersession(
+  manager: LedgerSessionManager,
+  current: WorkflowRecord,
+  replacementWorkItemId: string,
+): WorkflowAppendAuthority {
+  const authority = captureWorkflowAppendAuthority(manager);
+  const { sessionId, branch } = authority;
+  const recoveryContext = authorityRecoveryContext(authority);
+
+  const workItemIds = new Set<string>();
+  let latestLedgerWorkItemId: string | undefined;
+  try {
+    // The branch was copied and bounded before this identity scan. Keep the
+    // index bound fixed so a host-controlled array cannot extend iteration.
+    const entryCount = branch.length;
+    for (let index = 0; index < entryCount; index += 1) {
+      const entry = branch[index];
+      if (!workflowObject(entry) || entry.type !== "custom" || entry.customType !== LEDGER_CUSTOM_TYPE) continue;
+      const data = entry.data;
+      if (!workflowObject(data) || typeof data.workItemId !== "string" || !data.workItemId.trim()) {
+        throw new Error("malformed workflow ledger entry");
+      }
+      workItemIds.add(data.workItemId);
+      latestLedgerWorkItemId = data.workItemId;
+    }
+  } catch {
+    throw new Error("Malformed persisted workflow ledger state; supersession is blocked.");
+  }
+  if (workItemIds.size === 0 || latestLedgerWorkItemId !== current.workItemId) {
+    throw new Error("The persisted active branch does not prove the current blocked workflow authority; supersession is blocked.");
+  }
+  if (workItemIds.has(replacementWorkItemId)) {
+    throw new Error("A replacement work-item ID must be fresh and absent from persisted workflow history; supersession is blocked.");
+  }
+
+  let currentSnapshot: ReturnType<typeof reconstructActiveSnapshot> | undefined;
+  for (const workItemId of workItemIds) {
+    const recovered = reconstructActiveSnapshot(branch, sessionId, workItemId, recoveryContext);
+    if (recovered.status === "blocked") {
+      throw new Error(`Persisted workflow lineage is malformed or unprovable; supersession is blocked: ${recovered.reason}`);
+    }
+    if (recovered.status === "absent") {
+      throw new Error("Persisted workflow ledger state is inconsistent; supersession is blocked.");
+    }
+    if (workItemId === current.workItemId) currentSnapshot = recovered;
+  }
+  if (!currentSnapshot || currentSnapshot.status !== "ok") {
+    throw new Error("The persisted active branch does not contain the current workflow authority; supersession is blocked.");
+  }
+  if (currentSnapshot.snapshot.record.phase !== "blocked") {
+    throw new Error("Only a canonically blocked workflow may be superseded; supersession is blocked.");
+  }
+  if (!exactWorkflowValue(current, currentSnapshot.snapshot.record)) {
+    throw new Error("The persisted blocked workflow authority conflicts with runtime state; supersession is blocked.");
+  }
+  return authority;
 }
 
 function workflowGateReference(value: unknown, field: string): string | BoundedEvidenceReference {
@@ -691,38 +1080,72 @@ export interface WorkflowActionResult {
  * persistence lineage are supplied by this implementation.
  */
 export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerDependencies) {
-  const append = (record: WorkflowRecord, timestamp: string): { entryId: string; record: WorkflowRecord } => {
-    const manager = deps.getSessionManager();
+  const append = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority): { entryId: string; record: WorkflowRecord } => {
+    const manager = authority?.manager ?? deps.getSessionManager();
     if (!manager) throw new Error("Workflow authoring requires an active SessionManager.");
     // appendWorkflowSnapshot performs the exact active-leaf acknowledgement;
     // the in-memory callback is deliberately after this call. Use the
     // acknowledged sanitized record so raw excerpts never become runtime
     // authority/context merely because this closure retained its input.
+    if (authority) {
+      const boundManager = managerBoundToWorkflowAuthority(authority);
+      const boundPi: LedgerAppender = {
+        appendEntry: (customType, data) => {
+          // The proof and append must share the same pre-append authority. A
+          // changed live branch is rejected before the host append is called.
+          assertLiveWorkflowAuthority(authority);
+          deps.pi.appendEntry(customType, data);
+        },
+      };
+      const persisted = appendWorkflowSnapshot(boundPi, boundManager, record, timestamp);
+      return { entryId: persisted.entryId, record: persisted.snapshot.record };
+    }
     const persisted = appendWorkflowSnapshot(deps.pi, manager, record, timestamp);
     return { entryId: persisted.entryId, record: persisted.snapshot.record };
   };
-  const commit = (record: WorkflowRecord, timestamp: string): WorkflowActionResult => {
-    const persisted = append(record, timestamp);
+  const commit = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority): WorkflowActionResult => {
+    const persisted = append(record, timestamp, authority);
     deps.setWorkflowRecord(persisted.record);
     return { workItemId: persisted.record.workItemId, phase: persisted.record.phase, entryId: persisted.entryId };
   };
 
   const specify = (input: Record<string, unknown>): WorkflowActionResult => {
     assertWorkflowActionFields(input, ["workItemId", "classification", "goal", "requirementIds", "functionalRequirements", "nonGoals", "expectedPaths", "roadmap", "acceptanceChecks", "authorityConstraints"]);
-    if (deps.getWorkflowRecord() !== undefined) throw new Error("A workflow packet already exists; replacement or reclassification is rejected.");
+    const current = deps.getWorkflowRecord();
+    const workItemId = workflowText(input.workItemId, "workItemId", 1024);
     const manager = deps.getSessionManager();
     if (!manager) throw new Error("Workflow authoring requires an active SessionManager.");
-    try {
-      for (const entry of manager.getBranch()) {
-        if (entry.type === "custom" && entry.customType === LEDGER_CUSTOM_TYPE) {
-          throw new Error("A persisted workflow packet or malformed ledger entry already exists; replacement or recovery bypass is rejected.");
-        }
+    let appendAuthority: WorkflowAppendAuthority;
+    if (current !== undefined) {
+      const currentClone = assertAccessorFreeWorkflowRecord(current);
+      const currentValidation = validateWorkflowRecord(currentClone);
+      if (!currentValidation.ok) throw new Error(`Only a valid canonically blocked workflow may be superseded; ${currentValidation.reason}`);
+      if (currentValidation.record.phase !== "blocked") {
+        throw new Error("A workflow packet already exists; only a canonically blocked packet may be superseded.");
       }
-    } catch (error) {
-      if (error instanceof Error && /persisted workflow packet/iu.test(error.message)) throw error;
-      throw new Error("Unable to prove that no prior workflow packet exists; authoring is blocked.");
+      if (workItemId === currentValidation.record.workItemId) {
+        throw new Error("A blocked workflow may only be superseded by a distinct fresh work-item ID.");
+      }
+      appendAuthority = proveBlockedSupersession(manager, currentValidation.record, workItemId);
+    } else {
+      // With no in-memory record, a persisted packet is not an invitation to
+      // recover or repair it. Fresh authoring is allowed only on a branch that
+      // independently proves there is no prior workflow ledger entry.
+      appendAuthority = captureWorkflowAppendAuthority(manager);
+      try {
+        const branch = appendAuthority.branch;
+        const entryCount = branch.length;
+        for (let index = 0; index < entryCount; index += 1) {
+          const entry = branch[index];
+          if (entry && entry.type === "custom" && entry.customType === LEDGER_CUSTOM_TYPE) {
+            throw new Error("A persisted workflow packet or malformed ledger entry already exists; replacement or recovery bypass is rejected.");
+          }
+        }
+      } catch (error) {
+        if (error instanceof Error && /persisted workflow packet/iu.test(error.message)) throw error;
+        throw new Error("Unable to prove that no prior workflow packet exists; authoring is blocked.");
+      }
     }
-    const workItemId = workflowText(input.workItemId, "workItemId", 1024);
     const classification = input.classification;
     if (!["feature", "bugfix", "refactor/maintenance", "documentation/configuration", "test-only/tooling"].includes(classification as string)) {
       throw new Error("classification is invalid or missing.");
@@ -798,7 +1221,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       });
     }
     record.nextGate = "red-test-observed-or-tdd-waived";
-    return commit(record, timestamp);
+    return commit(record, timestamp, appendAuthority);
   };
 
   const recordRed = (input: Record<string, unknown>): WorkflowActionResult => {

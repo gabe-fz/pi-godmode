@@ -37,6 +37,10 @@ Classification is recorded once in the session ledger. If work spans classificat
 
 The Primary authors this packet; Hand may ask questions or identify contradictions but may not silently broaden it. The packet is included in each fresh assignment rather than relying on conversation history.
 
+### Narrow blocked-packet supersession
+
+A packet is otherwise immutable, and `blocked` is not a same-item phase-recovery route. The sole controlled recovery exception is a fresh `specify` action when the current canonical packet is valid and its phase is `blocked`. The replacement must use a fresh `workItemId` that is distinct from and absent from persisted active-branch history; it creates and append-acknowledges a new packet at `red-test-ready` and does not resume, reclassify, or alter the blocked item. Before admitting it, the controller captures a bounded accessor-free authority, independently reconstructs the persisted active branch, and requires that the latest persisted authority exactly match the same valid blocked record held by the runtime. Every persisted ledger identity is checked. Accessor-backed or changing authority, an oversized branch, malformed or conflicting lineage, absent or inconsistent authority, an unprovable branch, a same-ID or historically reused ID, and replacement of active, accepted, rejected, or any other non-blocked phase fail closed. The append is accepted only after the active leaf exactly acknowledges the fresh snapshot and ancestry; failed proof or acknowledgement does not accept a replacement or update runtime authority. The prior blocked snapshots stay in append-only history and are inert; ordinary and forked lifecycle recovery select the fresh distinct item, with no malformed-ledger repair or same-item phase recovery.
+
 ### Durable requirement traceability
 
 | Requirement | Shipped control and evidence |
@@ -80,7 +84,7 @@ review-passed | scale-waived -> accepted
 scale-running -> remediation       (blocker or fix-now finding)
 remediation -> hand-running
 any active phase -> blocked        (unresolved decision, unsafe condition, or unavailable evidence)
-blocked -> specified | red-test-ready | hand-running | primary-verifying | scale-running
+blocked -- distinct fresh work-item via `specify` --> red-test-ready
 review-passed -> rejected          (Primary determines outcome is not acceptable)
 ```
 
