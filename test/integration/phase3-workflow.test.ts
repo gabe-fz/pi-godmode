@@ -3,10 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { test } from "node:test";
 import { createPrimaryWorkflowController } from "../../src/tools.ts";
 import { validateDelegation } from "../../src/faculties.ts";
+import { appendWorkflowSnapshot, reconstructActiveSnapshot, type LedgerSessionManager } from "../../src/session-ledger.ts";
 import { applyPhaseTransition, validateWorkflowRecord } from "../../src/workflow-state.ts";
 import { GodmodeMode } from "../../src/mode.ts";
 import { ModelLease } from "../../src/model-lease.ts";
@@ -53,6 +54,40 @@ function withInspection(record: WorkflowRecord): WorkflowRecord {
   };
 }
 
+function ambiguousAppend(record: WorkflowRecord): { manager: LedgerSessionManager; entries: SessionEntry[]; writes: number; retry: ReturnType<typeof appendWorkflowSnapshot> } {
+  const entries: SessionEntry[] = [];
+  let branchReads = 0;
+  let leafReads = 0;
+  let writes = 0;
+  const manager: LedgerSessionManager = {
+    getSessionId: () => "phase3-retry-session",
+    getBranch: () => {
+      branchReads += 1;
+      return branchReads <= 2 ? [] : [...entries];
+    },
+    getLeafEntry: () => {
+      leafReads += 1;
+      return leafReads <= 2 ? undefined : entries.at(-1);
+    },
+  };
+  const pi = {
+    appendEntry(customType: string, data: unknown) {
+      writes += 1;
+      entries.push({
+        id: `scale-entry-${writes}`,
+        parentId: entries.at(-1)?.id ?? null,
+        timestamp: "2026-09-04T02:01:00.000Z",
+        type: "custom",
+        customType,
+        data,
+      });
+    },
+  };
+  assert.throws(() => appendWorkflowSnapshot(pi, manager, record, "2026-09-04T02:00:01.000Z"), /append blocked/i);
+  const retry = appendWorkflowSnapshot(pi, manager, record, "2026-09-04T02:00:02.000Z");
+  return { manager, entries, writes, retry };
+}
+
 test("Phase 3 evidence-ready requires a complete Primary inspection", () => {
   const record = toPrimaryVerifying();
   assert.throws(() => applyPhaseTransition(record, { ...audit, to: "evidence-ready" }), /inspection/i);
@@ -73,6 +108,56 @@ test("Phase 3 rejects stale Scale fingerprints and accepts only classified findi
     },
   } as WorkflowRecord;
   assert.equal(validateWorkflowRecord(stale).ok, false);
+});
+
+test("Scale admission and review remain one generation after an ambiguous fresh-timestamp acknowledgement", () => {
+  let current = toPrimaryVerifying();
+  current = {
+    ...current,
+    redTestEvidence: {
+      id: "red-test", command: "npm test", environment: "controlled", exitStatus: 1,
+      requirementIds: ["FR-2", "FR-9"], testPath: "test/red.test.ts", testContentHash: "b".repeat(64),
+      observedBy: "Primary", observedAt: audit.timestamp, failureKind: "missing-behavior", outputExcerpt: "The intended behavior is missing.",
+    },
+    redTestReference: "red-test",
+    primaryInspection: {
+      id: "inspection-test", actor: "Primary", inspectedAt: audit.timestamp,
+      statusReference: "artifact:status", completeDiffReference: "artifact:diff", diffFingerprint: "a".repeat(64),
+      materiallyChangedPaths: ["src/workflow-state.ts"], outOfScopeChanges: [],
+      independentChecks: [{ id: "check", command: "npm test", result: "passed", evidenceReference: "artifact:test" }], residualRisks: [],
+    },
+  };
+  const inspected = applyPhaseTransition(current, { ...audit, to: "evidence-ready" });
+  const scaleRunning = applyPhaseTransition(inspected, { ...audit, to: "scale-running" });
+  const admissionId = `scale-admission-${"c".repeat(64)}`;
+  const reviewRecord: WorkflowRecord = {
+    ...scaleRunning,
+    scaleAdmission: {
+      admissionId, nonce: "c".repeat(64), workItemId: scaleRunning.workItemId,
+      inspectionId: "inspection-test", diffFingerprint: "a".repeat(64),
+      admittedAt: audit.timestamp, boundRunId: "scale-run-test",
+    },
+    scaleReview: {
+      id: "scale-review-test", runId: "scale-run-test", admissionId, reviewer: "Scale",
+      completedAt: audit.timestamp, freshContext: true, diffFingerprint: fingerprint,
+      evidenceReferences: ["artifact:status", "artifact:diff", "artifact:test"],
+      verdict: "pass", findings: [], residualUncertainty: "none",
+    },
+  };
+  const record = applyPhaseTransition(reviewRecord, { ...audit, to: "review-passed" });
+  const result = ambiguousAppend(record);
+  assert.equal(result.writes, 1);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.retry.snapshot.generation, 1);
+  assert.equal(result.retry.snapshot.record.scaleAdmission?.boundRunId, "scale-run-test");
+  assert.equal(result.retry.snapshot.record.scaleReview?.runId, "scale-run-test");
+  const recovered = reconstructActiveSnapshot(result.entries, result.manager.getSessionId(), record.workItemId);
+  assert.equal(recovered.status, "ok");
+  if (recovered.status === "ok") {
+    assert.equal(recovered.entryId, result.retry.entryId);
+    assert.deepEqual(recovered.snapshot.record.scaleAdmission, record.scaleAdmission);
+    assert.deepEqual(recovered.snapshot.record.scaleReview, record.scaleReview);
+  }
 });
 
 test("Phase 3 remediation clears stale current acceptance evidence", () => {

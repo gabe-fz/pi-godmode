@@ -270,6 +270,64 @@ test("recovery blocks malformed persisted fork origin metadata", () => {
   if (recovered.status === "blocked") assert.match(recovered.reason, /origin|snapshot|blocked/i);
 });
 
+test("append adapter reconciles an exact durable active-tail append when the immediate leaf is stale", () => {
+  const entries: SessionEntry[] = [];
+  let staleLeaf: SessionEntry | undefined;
+  const result = appendWorkflowSnapshot(
+    {
+      appendEntry(customType, data) {
+        entries.push(customEntry("entry-1", null, data, customType));
+      },
+    },
+    {
+      getSessionId: () => "session-1",
+      getBranch: () => [...entries],
+      getLeafEntry: () => staleLeaf,
+    },
+    workflowRecord(),
+    "2026-09-03T00:00:01.000Z",
+  );
+
+  assert.equal(result.entryId, "entry-1");
+  assert.equal(result.snapshot.generation, 1);
+  assert.equal(entries.length, 1);
+});
+
+test("retry adopts a previously committed active-tail append without duplicating it when the trusted timestamp changes", () => {
+  const entries: SessionEntry[] = [];
+  let branchReads = 0;
+  let leafReads = 0;
+  let writes = 0;
+  const sessionManager = {
+    getSessionId: () => "session-1",
+    getBranch: () => {
+      branchReads += 1;
+      return branchReads <= 2 ? [] : [...entries];
+    },
+    getLeafEntry: () => {
+      leafReads += 1;
+      return leafReads <= 2 ? undefined : entries.at(-1);
+    },
+  };
+  const pi = {
+    appendEntry(customType: string, data: unknown) {
+      writes += 1;
+      entries.push(customEntry(`entry-${writes}`, entries.at(-1)?.id ?? null, data, customType));
+    },
+  };
+
+  assert.throws(() => appendWorkflowSnapshot(
+    pi, sessionManager, workflowRecord(), "2026-09-03T00:00:01.000Z",
+  ), /append blocked/i);
+  const retried = appendWorkflowSnapshot(
+    pi, sessionManager, workflowRecord(), "2026-09-03T00:00:02.000Z",
+  );
+
+  assert.equal(retried.entryId, "entry-1");
+  assert.equal(writes, 1);
+  assert.equal(entries.length, 1);
+});
+
 test("append adapter fails closed when the host does not acknowledge the exact new leaf", () => {
   const cases: Array<(snapshot: unknown) => SessionEntry | undefined> = [
     () => undefined,

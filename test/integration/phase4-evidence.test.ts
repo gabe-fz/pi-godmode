@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { test } from "node:test";
 import { createPrimaryWorkflowController } from "../../src/tools.ts";
 import { renderAssignment, validateDelegation } from "../../src/faculties.ts";
-import { reconstructActiveSnapshot } from "../../src/session-ledger.ts";
+import { appendWorkflowSnapshot, reconstructActiveSnapshot, type LedgerSessionManager } from "../../src/session-ledger.ts";
 import { applyPhaseTransition, validateInterfaceEvidenceMatrix, validateInterfaceEvidenceMatrixDetailed, validateWorkflowRecord } from "../../src/workflow-state.ts";
 import type { BoundedEvidenceReference, WorkflowRecord } from "../../src/types.ts";
 
@@ -316,5 +316,109 @@ test("Phase 4 records all surfaces, never executes invocation text, retries fail
       .filter((reference): reference is BoundedEvidenceReference => typeof reference === "object" && reference !== null && typeof reference.source === "string")
       .map((reference) => reference.source!);
     assert.equal(acceptedSources.every((source) => existsSync(source)), false, "terminal cleanup removes temporary files while snapshots remain recoverable");
+  }
+});
+
+test("accepted completion capsule is adopted once after ambiguous acknowledgement and remains equal after reopen", () => {
+  const runtime = runtimeController();
+  specify(runtime);
+  inspect(runtime);
+  runtime.controller.execute({
+    action: "record-evidence",
+    acceptanceCheckSpecs: [],
+    applicabilityDecisions: surfaces.map((surface) => ({
+      surface,
+      requirementIds: ["FR-8"],
+      applicability: "not-applicable",
+      reason: `This retry fixture does not expose the ${surface} surface.`,
+    })),
+    interfaceEvidence: [],
+  });
+  let reviewRecord = applyPhaseTransition(runtime.getRecord()!, { ...audit, to: "scale-running" });
+  const nonce = "e".repeat(64);
+  reviewRecord = {
+    ...reviewRecord,
+    scaleAdmission: {
+      admissionId: `scale-admission-${nonce}`, nonce, workItemId: reviewRecord.workItemId,
+      inspectionId: reviewRecord.primaryInspection!.id, diffFingerprint: reviewRecord.primaryInspection!.diffFingerprint,
+      admittedAt: audit.timestamp, boundRunId: "phase4-retry-scale",
+    },
+  };
+  runtime.setRecord(reviewRecord);
+  runtime.setLatestScaleRun("phase4-retry-scale");
+  const inspection = reviewRecord.primaryInspection!;
+  runtime.controller.execute({
+    action: "record-scale-review",
+    evidenceReferences: [inspection.statusReference, inspection.completeDiffReference, ...inspection.independentChecks.map((check) => check.evidenceReference)],
+    verdict: "pass", findings: [], residualUncertainty: "No residual uncertainty in the retry fixture.",
+  });
+  const reviewReady = runtime.getRecord()!;
+  const accepted = runtime.controller.execute({ action: "accept", reason: "Primary accepted the retry fixture after the Scale review." });
+  assert.equal(accepted.phase, "accepted");
+  const expectedAcceptedRecord = runtime.getRecord()!;
+  assert(expectedAcceptedRecord.completionCapsule);
+  assert.equal(expectedAcceptedRecord.completionCapsule.accepted, true);
+
+  const root = mkdtempSync(join(tmpdir(), "godmode-phase4-retry-"));
+  const backing = SessionManager.create(root, join(root, "sessions"));
+  const entries: SessionEntry[] = [];
+  let branchReads = 0;
+  let leafReads = 0;
+  let writes = 0;
+  const manager: LedgerSessionManager = {
+    getSessionId: () => backing.getSessionId(),
+    getBranch: () => {
+      branchReads += 1;
+      return branchReads <= 2 ? [] : [...entries];
+    },
+    getLeafEntry: () => {
+      leafReads += 1;
+      return leafReads <= 2 ? undefined : entries.at(-1);
+    },
+  };
+  let retryRecord = reviewReady;
+  let nowCalls = 0;
+  const retryController = createPrimaryWorkflowController({
+    pi: {
+      appendEntry(customType: string, data: unknown) {
+        writes += 1;
+        backing.appendCustomEntry(customType, data);
+        const latest = backing.getBranch().at(-1);
+        if (latest) entries.push(latest);
+      },
+    },
+    getSessionManager: () => manager,
+    getWorkflowRecord: () => retryRecord,
+    setWorkflowRecord: (next) => { retryRecord = next; },
+    cwd: () => root,
+    now: () => {
+      nowCalls += 1;
+      return nowCalls === 1 ? "2026-09-04T04:00:01.000Z" : "2026-09-04T04:00:02.000Z";
+    },
+    verifyInspectionArtifacts: () => true,
+  });
+  const reason = "Primary accepted the retry fixture after the Scale review.";
+  assert.throws(() => retryController.execute({ action: "accept", reason }), /append blocked/i);
+  const retry = retryController.execute({ action: "accept", reason });
+  assert.equal(retry.phase, "accepted");
+  assert.equal(retryRecord.completionCapsule?.accepted, true);
+  assert.equal(writes, 1);
+  assert.equal(entries.length, 1);
+
+  backing.appendMessage({
+    role: "assistant", content: [], timestamp: Date.now(), api: "fixture", provider: "fixture", model: "fixture",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop",
+  });
+  const file = backing.getSessionFile();
+  assert(file);
+  const reopened = SessionManager.open(file);
+  const recovered = reconstructActiveSnapshot(reopened.getBranch(), reopened.getSessionId(), retryRecord.workItemId);
+  assert.equal(recovered.status, "ok");
+  if (recovered.status === "ok") {
+    assert.equal(recovered.snapshot.generation, 1);
+    assert.deepEqual(recovered.snapshot.record, retryRecord);
+    assert.notDeepEqual(recovered.snapshot.record, expectedAcceptedRecord, "retry adopts the first committed timestamps rather than regenerating the capsule");
+    assert.equal(recovered.snapshot.record.completionCapsule?.accepted, true);
   }
 });

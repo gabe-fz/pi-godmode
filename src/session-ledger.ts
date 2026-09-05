@@ -14,6 +14,18 @@ import { validateWorkflowPacket, validateWorkflowRecord } from "./workflow-state
 
 export const LEDGER_SCHEMA_VERSION = 1 as const;
 export const LEDGER_CUSTOM_TYPE = "godmode-workflow-ledger";
+
+/**
+ * The append call may have committed even when its synchronous acknowledgement
+ * was lost or threw. Callers with a retryable lifecycle slot can retry the
+ * same explicit operation identity; callers must not treat this as success.
+ */
+export class WorkflowAppendAmbiguousError extends Error {
+  constructor(reason: string) {
+    super(`Workflow snapshot append blocked: ${reason}`);
+    this.name = "WorkflowAppendAmbiguousError";
+  }
+}
 const MAX_PROJECTION_BYTES = 2_048;
 const MAX_STRING_LENGTH = 1_024;
 const MAX_COLLECTION_LENGTH = 64;
@@ -26,6 +38,8 @@ const MAX_DEPTH = 8;
 const MAX_ACTIVE_BRANCH_ENTRIES = 1_024;
 /** Total own properties visited by append acknowledgement comparison. */
 const MAX_EXACT_PERSISTED_ENTRIES = 1_024;
+const MAX_OPERATION_CANONICAL_BYTES = 4 * 1024 * 1024;
+const MAX_PENDING_APPEND_INTENTS = 128;
 const REDACTED = "[REDACTED]";
 const TRUNCATED = "[TRUNCATED]";
 
@@ -53,6 +67,83 @@ function safeJson(value: unknown): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * Build the explicit stable identity used by a trusted workflow action. The
+ * action supplies this identity from its canonical input before trusted audit
+ * fields are generated; no timestamp-like field is stripped here. Canonical
+ * key ordering makes equivalent object construction deterministic while the
+ * fixed depth/property budgets keep identity computation bounded.
+ */
+function canonicalOperationValue(
+  value: unknown,
+  depth = 0,
+  path = new WeakSet<object>(),
+  budget = { remaining: MAX_EXACT_PERSISTED_ENTRIES },
+): string {
+  if (budget.remaining-- <= 0 || depth > MAX_DEPTH) throw new Error("Workflow operation identity exceeds the bounded comparison limit.");
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Workflow operation identity contains a non-finite number.");
+    return Object.is(value, -0) ? "-0" : JSON.stringify(value);
+  }
+  if (typeof value !== "object") throw new Error("Workflow operation identity contains an unsupported value.");
+  if (path.has(value)) throw new Error("Workflow operation identity is cyclic.");
+  path.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (!lengthDescriptor || lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined
+        || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value)
+        || lengthDescriptor.value > MAX_COLLECTION_LENGTH) {
+        throw new Error("Workflow operation identity array is malformed.");
+      }
+      const keys = Reflect.ownKeys(value);
+      if (keys.length !== lengthDescriptor.value + 1
+        || keys.some((key) => key !== "length" && (typeof key !== "string" || !/^\d+$/u.test(key)))) {
+        throw new Error("Workflow operation identity array has unsupported properties.");
+      }
+      const values: string[] = [];
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+          throw new Error("Workflow operation identity array is accessor-backed.");
+        }
+        values.push(canonicalOperationValue(descriptor.value, depth + 1, path, budget));
+      }
+      return `[${values.join(",")}]`;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) throw new Error("Workflow operation identity object is malformed.");
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > MAX_COLLECTION_LENGTH || keys.some((key) => typeof key !== "string")) {
+      throw new Error("Workflow operation identity object is oversized or unsupported.");
+    }
+    const orderedKeys = (keys as string[]).sort();
+    const fields: string[] = [];
+    for (const key of orderedKeys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)
+        || !descriptor.enumerable || byteLength(key) > MAX_STRING_LENGTH) {
+        throw new Error("Workflow operation identity object is accessor-backed or malformed.");
+      }
+      fields.push(`${JSON.stringify(key)}:${canonicalOperationValue(descriptor.value, depth + 1, path, budget)}`);
+    }
+    return `{${fields.join(",")}}`;
+  } finally {
+    path.delete(value);
+  }
+}
+
+/** Return a bounded hash of one explicit action/operation identity. */
+export function createWorkflowOperationIdentity(action: string, input: unknown): string {
+  if (!validIdentity(action)) throw new Error("Workflow operation action identity is invalid.");
+  const canonical = canonicalOperationValue(input);
+  if (byteLength(canonical) > MAX_OPERATION_CANONICAL_BYTES) throw new Error("Workflow operation identity exceeds the bounded size limit.");
+  return `workflow-operation-v1-${createHash("sha256").update(action, "utf8").update("\\0", "utf8").update(canonical, "utf8").digest("hex")}`;
 }
 
 const SENSITIVE_KEY = /(?:authorization|api[_-]?key|access[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|password|passwd|passphrase|credential|private[_-]?key|cookie|set-cookie|signature)/i;
@@ -534,7 +625,19 @@ export function reconstructActiveSnapshot(
   recoveryContext?: LedgerRecoveryContext,
 ): SnapshotRecovery {
   try {
-    return reconstructActiveSnapshotBounded(entries, sessionId, workItemId, recoveryContext);
+    // SessionManager entries are host-controlled. Clone the bounded branch
+    // through own data descriptors before reconstruction so candidate
+    // validation never invokes accessors or retains mutable host objects.
+    if (Array.isArray(entries)) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(entries, "length");
+      if (lengthDescriptor && "value" in lengthDescriptor && Number.isSafeInteger(lengthDescriptor.value)
+        && lengthDescriptor.value > MAX_ACTIVE_BRANCH_ENTRIES) {
+        return blocked("Active branch exceeds the bounded recovery limit; recovery blocked.");
+      }
+    }
+    const safeEntries = copyBoundedActiveBranch(entries);
+    if (!safeEntries) return blocked("Malformed active branch lineage; recovery blocked.");
+    return reconstructActiveSnapshotBounded(safeEntries, sessionId, workItemId, recoveryContext);
   } catch {
     return blocked("Malformed active branch lineage; recovery blocked.");
   }
@@ -726,6 +829,48 @@ interface ForkSuccessorProofBinding {
 const forkSuccessorProofs = new WeakMap<object, ForkSuccessorProofBinding>();
 
 /**
+ * An append can be durably committed even when both acknowledgement reads are
+ * stale. Keep the one bounded in-process operation intent needed to reconcile
+ * that acknowledgement on a later call. The intent is never authority by
+ * itself: adoption below still requires the exact active-tail prefix,
+ * predecessor, generation, custom type, and persisted operation payload.
+ */
+interface PendingAppendIntent {
+  sessionId: string;
+  workItemId: string;
+  predecessorEntryId: string | null;
+  /** Stable identity of the canonical action, excluding generated authority. */
+  operationId: string;
+  capturedPrefix: readonly SessionEntry[];
+  snapshot: LedgerSnapshot;
+}
+
+/**
+ * The manager object is not a stable owner: real lifecycle code may expose a
+ * fresh per-call wrapper around the same SessionManager. Keep at most one
+ * unresolved intent for each session/work-item/predecessor tuple instead.
+ * Session and predecessor remain part of the key, so an intent cannot become
+ * authority for another session or another active-tail generation.
+ */
+const pendingAppendIntents = new Map<string, PendingAppendIntent>();
+
+function pendingAppendKey(sessionId: string, workItemId: string, predecessorEntryId: string | null): string {
+  return `${sessionId.length}:${sessionId}|${workItemId.length}:${workItemId}|${predecessorEntryId ?? "<root>"}`;
+}
+
+function pendingIntentFor(
+  sessionId: string,
+  workItemId: string,
+  predecessorEntryId: string | null,
+): PendingAppendIntent | undefined {
+  return pendingAppendIntents.get(pendingAppendKey(sessionId, workItemId, predecessorEntryId));
+}
+
+function clearPendingIntent(sessionId: string, workItemId: string, predecessorEntryId: string | null): void {
+  pendingAppendIntents.delete(pendingAppendKey(sessionId, workItemId, predecessorEntryId));
+}
+
+/**
  * Issue a one-time proof only after the trusted lifecycle has checked the
  * fork event and current session header. Callers should not persist or copy
  * the returned object; it is intentionally meaningless outside this module.
@@ -791,6 +936,10 @@ function consumeForkSuccessorProof(
 
 function appendBlocked(reason: string): never {
   throw new Error(`Workflow snapshot append blocked: ${reason}`);
+}
+
+function appendAmbiguous(reason: string): never {
+  throw new WorkflowAppendAmbiguousError(reason);
 }
 
 /** Validate the branch shape before deriving any successor metadata. */
@@ -905,16 +1054,206 @@ function exactPersistedValue(left: unknown, right: unknown): boolean {
   return compare(left, right, 0);
 }
 
-/** Copy only a bounded active branch; never consume a host-provided iterator. */
-function copyBoundedActiveBranch(entries: readonly SessionEntry[]): readonly SessionEntry[] {
-  if (!Array.isArray(entries)) return entries;
-  const entryCount = entries.length;
-  if (!Number.isSafeInteger(entryCount) || entryCount < 0 || entryCount > MAX_ACTIVE_BRANCH_ENTRIES) return entries;
-  const copy: SessionEntry[] = [];
-  for (let index = 0; index < entryCount; index += 1) {
-    copy.push(entries[index]!);
+/** A private marker for values that cannot be safely cloned without invoking getters. */
+const ACCESSOR_FREE_INVALID = Symbol("accessor-free-invalid");
+
+/**
+ * Clone one bounded persisted value using only own data descriptors. Returned
+ * session entries are host-controlled, so reading them through normal
+ * property access would let an accessor-backed candidate influence authority
+ * validation. Cycles, unsupported prototypes, and unbounded values fail
+ * closed instead.
+ */
+function cloneAccessorFreePersistedValue(
+  value: unknown,
+  depth = 0,
+  path = new WeakSet<object>(),
+  budget = { remaining: MAX_EXACT_PERSISTED_ENTRIES },
+): unknown {
+  if (budget.remaining-- <= 0) return ACCESSOR_FREE_INVALID;
+  if (value === null) return null;
+  if (typeof value === "string") return byteLength(value) <= MAX_STRING_LENGTH ? value : ACCESSOR_FREE_INVALID;
+  if (typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value !== "object") return ACCESSOR_FREE_INVALID;
+  if (depth >= MAX_DEPTH || path.has(value)) return ACCESSOR_FREE_INVALID;
+  path.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return ACCESSOR_FREE_INVALID;
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (!lengthDescriptor || lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined
+        || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_COLLECTION_LENGTH) {
+        return ACCESSOR_FREE_INVALID;
+      }
+      const keys = Reflect.ownKeys(value);
+      if (keys.length !== lengthDescriptor.value + 1 || keys.some((key) => key !== "length" && (typeof key !== "string" || !/^\d+$/u.test(key)))) {
+        return ACCESSOR_FREE_INVALID;
+      }
+      const output: unknown[] = [];
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+          return ACCESSOR_FREE_INVALID;
+        }
+        const cloned = cloneAccessorFreePersistedValue(descriptor.value, depth + 1, path, budget);
+        if (cloned === ACCESSOR_FREE_INVALID) return ACCESSOR_FREE_INVALID;
+        output.push(cloned);
+      }
+      return output;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return ACCESSOR_FREE_INVALID;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > MAX_COLLECTION_LENGTH || keys.some((key) => typeof key !== "string")) return ACCESSOR_FREE_INVALID;
+    const output: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (typeof key !== "string") return ACCESSOR_FREE_INVALID;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)
+        || !descriptor.enumerable || byteLength(key) > MAX_STRING_LENGTH) return ACCESSOR_FREE_INVALID;
+      const cloned = cloneAccessorFreePersistedValue(descriptor.value, depth + 1, path, budget);
+      if (cloned === ACCESSOR_FREE_INVALID) return ACCESSOR_FREE_INVALID;
+      Object.defineProperty(output, key, {
+        value: cloned,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return output;
+  } catch {
+    return ACCESSOR_FREE_INVALID;
+  } finally {
+    path.delete(value);
   }
-  return copy;
+}
+
+/** Clone an entry's authority-bearing fields without invoking candidate getters. */
+function copyAccessorFreeEntry(value: unknown): SessionEntry | undefined {
+  try {
+    if (value === undefined) return undefined;
+    if (!isObject(value) || Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+    const ownData = (key: string, required = true): { present: boolean; value?: unknown } => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor) {
+        if (required) throw new Error("missing entry field");
+        return { present: false };
+      }
+      if (descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) throw new Error("accessor-backed entry field");
+      return { present: true, value: descriptor.value };
+    };
+    const id = ownData("id");
+    const parentId = ownData("parentId");
+    const type = ownData("type");
+    const timestamp = ownData("timestamp");
+    const output: Record<string, unknown> = {
+      id: id.value,
+      parentId: parentId.value,
+      type: type.value,
+      timestamp: timestamp.value,
+    };
+    if (type.value === "custom") {
+      const customType = ownData("customType");
+      output.customType = customType.value;
+      if (customType.value === LEDGER_CUSTOM_TYPE) {
+        const data = ownData("data", false);
+        if (data.present) {
+          const cloned = cloneAccessorFreePersistedValue(data.value);
+          if (cloned === ACCESSOR_FREE_INVALID) return undefined;
+          output.data = cloned;
+        }
+      }
+    }
+    return Object.freeze(output) as unknown as SessionEntry;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Copy a bounded active branch; never consume a host-provided iterator. */
+function copyBoundedActiveBranch(entries: readonly SessionEntry[]): readonly SessionEntry[] | undefined {
+  try {
+    if (!Array.isArray(entries)) return undefined;
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(entries, "length");
+    if (!lengthDescriptor || lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined
+      || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value)
+      || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_ACTIVE_BRANCH_ENTRIES) return undefined;
+    const copy: SessionEntry[] = [];
+    for (let index = 0; index < lengthDescriptor.value; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(entries, String(index));
+      if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) return undefined;
+      const entry = copyAccessorFreeEntry(descriptor.value);
+      if (!entry) return undefined;
+      copy.push(entry);
+    }
+    return copy;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Compare a post-append branch against the captured prefix and exact tail. */
+function reconciledTailEntryId(
+  branch: readonly SessionEntry[],
+  capturedPrefix: readonly SessionEntry[],
+  priorLeafId: string | null,
+  branchIds: ReadonlySet<string>,
+  snapshot: LedgerSnapshot,
+): string | undefined {
+  try {
+    if (branch.length !== capturedPrefix.length + 1) return undefined;
+    for (let index = 0; index < capturedPrefix.length; index += 1) {
+      if (!exactPersistedValue(branch[index], capturedPrefix[index])) return undefined;
+    }
+    const candidate = branch[capturedPrefix.length];
+    if (!candidate || !isLedgerEntry(candidate)) return undefined;
+    const candidateId = candidate.id;
+    if (!validIdentity(candidateId) || candidateId === priorLeafId || branchIds.has(candidateId)
+      || candidate.parentId !== priorLeafId || !nonEmptyString(candidate.timestamp)
+      || !exactPersistedValue(candidate.data, snapshot)) return undefined;
+    return candidateId;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reconcile a prior ambiguous append. The candidate must be the current
+ * active-tail successor of the exact captured prefix and must carry the same
+ * predecessor-bound operation; a record-only or timestamp-only match is not
+ * sufficient. This is intentionally separate from normal append reconciliation
+ * so an ordinary acknowledged append with the same record still advances a
+ * generation.
+ */
+function pendingReplayEntryId(
+  branch: readonly SessionEntry[],
+  intent: PendingAppendIntent,
+): string | undefined {
+  try {
+    if (branch.length !== intent.capturedPrefix.length + 1
+      || intent.snapshot.predecessorEntryId !== intent.predecessorEntryId) return undefined;
+    const prefixTail = intent.capturedPrefix.length > 0
+      ? intent.capturedPrefix[intent.capturedPrefix.length - 1]
+      : undefined;
+    if ((prefixTail?.id ?? null) !== intent.predecessorEntryId) return undefined;
+    for (let index = 0; index < intent.capturedPrefix.length; index += 1) {
+      if (!exactPersistedValue(branch[index], intent.capturedPrefix[index])) return undefined;
+    }
+    const candidate = branch[intent.capturedPrefix.length];
+    if (!candidate || !isLedgerEntry(candidate)) return undefined;
+    const candidateId = candidate.id;
+    if (!validIdentity(candidateId) || candidate.parentId !== intent.predecessorEntryId
+      || !nonEmptyString(candidate.timestamp)) return undefined;
+    for (const prefixEntry of intent.capturedPrefix) if (prefixEntry.id === candidateId) return undefined;
+    // The stable operation identity selects this one pending intent; the
+    // persisted candidate must still equal the original snapshot exactly.
+    // Never infer equivalence by dropping generated timestamps or comparing a
+    // broad semantic record projection.
+    if (!exactPersistedValue(candidate.data, intent.snapshot)) return undefined;
+    return candidateId;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -929,6 +1268,7 @@ function appendWorkflowSnapshotInternal(
   record: WorkflowRecord,
   createdAt: string,
   proof?: unknown,
+  operationId?: string,
 ): { entryId: string; snapshot: LedgerSnapshot } {
   let sessionId: string;
   let branch: readonly SessionEntry[];
@@ -938,13 +1278,24 @@ function appendWorkflowSnapshotInternal(
     const activeBranch = sessionManager.getBranch();
     // Keep a pre-append copy: structural callers may expose their backing
     // array directly even though Pi's public getter currently returns a new
-    // path array. Avoid consuming a potentially hostile custom iterator.
-    branch = copyBoundedActiveBranch(activeBranch);
-    priorLeaf = sessionManager.getLeafEntry();
+    // path array. Avoid consuming a potentially hostile custom iterator, and
+    // reject accessor-backed entries before any candidate data is validated.
+    const copiedBranch = copyBoundedActiveBranch(activeBranch);
+    if (!copiedBranch) appendBlocked("Unable to read active branch lineage; append blocked.");
+    branch = copiedBranch;
+    try {
+      priorLeaf = copyAccessorFreeEntry(sessionManager.getLeafEntry());
+    } catch {
+      // A pre-append leaf read can be stale/ambiguous as well. The branch is
+      // still required for structural validation, and only an exact replay at
+      // its active tail may proceed without a leaf acknowledgement.
+      priorLeaf = undefined;
+    }
   } catch {
     appendBlocked("Unable to read session identity or active branch lineage.");
   }
   if (!validIdentity(sessionId)) appendBlocked("Session identity is invalid.");
+  if (operationId !== undefined && !validIdentity(operationId)) appendBlocked("Workflow operation identity is invalid.");
 
   let proofBinding: ForkSuccessorProofBinding | undefined;
   if (proof !== undefined) {
@@ -953,12 +1304,18 @@ function appendWorkflowSnapshotInternal(
   }
 
   let branchIsValid = false;
+  let branchShapeIsValid = false;
   try {
+    // Keep the branch as the bounded structural evidence. A stale leaf read is
+    // tolerated only long enough to recognize an exact replay at that branch
+    // tail; a new append still requires the pre-append leaf acknowledgement.
+    const branchTail = branch.length > 0 ? branch[branch.length - 1] : undefined;
+    branchShapeIsValid = validActiveBranch(branch, branchTail);
     branchIsValid = validActiveBranch(branch, priorLeaf);
   } catch {
     appendBlocked("Unable to read active branch lineage; append blocked.");
   }
-  if (!branchIsValid) appendBlocked("Active branch lineage is malformed or inconsistent.");
+  if (!branchShapeIsValid) appendBlocked("Active branch lineage is malformed or inconsistent.");
 
   let priorLeafId: string | null = null;
   let branchIds: Set<string>;
@@ -972,6 +1329,11 @@ function appendWorkflowSnapshotInternal(
   const validation = validateWorkflowRecord(record);
   if (!validation.ok) appendBlocked(validation.reason);
   let canonicalRecord = validation.record;
+  // Direct ledger callers predate the controller action seam. Give them an
+  // explicit deterministic record-bound identity rather than recovering by
+  // dropping snapshot timestamps. Controller/lifecycle callers provide the
+  // stronger action identity above this boundary.
+  const appendOperationId = operationId ?? createWorkflowOperationIdentity("ledger-record-append", canonicalRecord);
   const recovery = reconstructActiveSnapshot(
     branch,
     sessionId,
@@ -1007,6 +1369,66 @@ function appendWorkflowSnapshotInternal(
     appendBlocked("Fork successor proof cannot be used on an already current-session lineage.");
   }
 
+  // A retry may arrive after the host durably committed the exact result but
+  // before the caller observed the acknowledgement. Treat only the active
+  // branch tail as replay evidence. The complete persisted record and
+  // append timestamp must match for this ordinary replay path; summaries,
+  // timestamps alone, and arbitrary ledger presence are never replay authority.
+  // A fresh-timestamp retry is handled only by the predecessor-bound intent below.
+  // A fresh trusted timestamp is not operation identity. Locate an unresolved
+  // intent by the exact session/work-item/predecessor tuple rather than by the
+  // manager object: lifecycle adapters may hand each retry a new wrapper.
+  // When the candidate is already visible its predecessor is in the candidate
+  // snapshot; when acknowledgement is still stale the current tail is the
+  // predecessor of the unresolved append.
+  let pending: PendingAppendIntent | undefined;
+  if (!inheritedSeed) {
+    const pendingPredecessors = currentSnapshot
+      ? [currentSnapshot.entryId, currentSnapshot.snapshot.predecessorEntryId]
+      : [null];
+    for (const predecessor of pendingPredecessors) {
+      pending = pendingIntentFor(sessionId, canonicalRecord.workItemId, predecessor);
+      if (pending) break;
+    }
+  }
+
+  // A same-timestamp call remains a compatibility replay only for callers
+  // that do not provide explicit identity. An explicit identity cannot be
+  // inferred from a persisted snapshot (operation IDs are deliberately not
+  // persisted), so an exact same-timestamp candidate without a matching
+  // pending intent must fail closed rather than adopting another operation.
+  const exactCurrentTimestampReplay = !inheritedSeed && currentSnapshot && branch.length > 0
+    && currentSnapshot.entryId === branch[branch.length - 1]?.id
+    && currentSnapshot.snapshot.createdAt === createdAt
+    && exactPersistedValue(currentSnapshot.snapshot.record, sanitizedRecord(canonicalRecord));
+  if (exactCurrentTimestampReplay && operationId === undefined) {
+    clearPendingIntent(sessionId, canonicalRecord.workItemId, currentSnapshot.snapshot.predecessorEntryId);
+    return { entryId: currentSnapshot.entryId, snapshot: currentSnapshot.snapshot };
+  }
+
+  // An unresolved intent is an exclusive operation slot. A changed action
+  // input, a missing identity, a near-match, or a branch that no longer has
+  // the exact active-tail candidate all fail closed rather than risking a
+  // duplicate generation.
+  if (pending) {
+    if (appendOperationId !== pending.operationId) {
+      appendBlocked("Active tail matches an unresolved append, but the retry operation identity is not exact; append blocked.");
+    }
+    const adoptedEntryId = pendingReplayEntryId(branch, pending);
+    if (adoptedEntryId !== undefined && currentSnapshot?.entryId === adoptedEntryId) {
+      clearPendingIntent(pending.sessionId, pending.workItemId, pending.predecessorEntryId);
+      return { entryId: adoptedEntryId, snapshot: currentSnapshot.snapshot };
+    }
+    appendBlocked("An unresolved workflow append could not be reconciled against the exact active tail; append blocked.");
+  }
+  if (exactCurrentTimestampReplay && operationId !== undefined) {
+    appendBlocked("An exact active-tail snapshot has no matching pending operation identity; append blocked.");
+  }
+
+  // A stale pre-append leaf cannot authorize a new successor. It was allowed
+  // above only so an exact, active-tail replay can be returned without writing.
+  if (!branchIsValid) appendBlocked("Active branch leaf acknowledgement is stale or inconsistent; append blocked.");
+
   const generation = inheritedSeed ? 1 : currentSnapshot ? currentSnapshot.snapshot.generation + 1 : 1;
   if (!Number.isSafeInteger(generation)) appendBlocked("Workflow snapshot generation exhausted.");
   const predecessorEntryId = inheritedSeed || !currentSnapshot ? null : currentSnapshot.entryId;
@@ -1033,21 +1455,50 @@ function appendWorkflowSnapshotInternal(
     ...(forkOrigin !== undefined ? { forkOrigin } : {}),
   });
 
+  // Preserve one bounded, immutable intent until the append is either
+  // acknowledged or adopted by a later fresh-timestamp retry. Fork
+  // successors intentionally do not use this path: their one-time proof is
+  // the session-boundary authority and remains consumed on any attempt.
+  if (!inheritedSeed) {
+    const key = pendingAppendKey(sessionId, canonicalRecord.workItemId, predecessorEntryId);
+    if (pendingAppendIntents.has(key)) {
+      // The existing intent was checked above. Reaching this point means its
+      // candidate was not provable, so replacing it would discard unresolved
+      // authority and could permit a duplicate append.
+      appendBlocked("A prior workflow append with this predecessor is unresolved; append blocked.");
+    }
+    if (pendingAppendIntents.size >= MAX_PENDING_APPEND_INTENTS) {
+      appendBlocked("The bounded workflow append intent limit is exhausted; append blocked.");
+    }
+    pendingAppendIntents.set(key, {
+      sessionId,
+      workItemId: canonicalRecord.workItemId,
+      predecessorEntryId,
+      operationId: appendOperationId,
+      capturedPrefix: Object.freeze([...branch]),
+      snapshot,
+    });
+  }
+
   // ExtensionAPI.appendEntry is synchronous and returns no entry ID. Do not
   // inspect or await a return value; the leaf check below is the commit
   // acknowledgement and fail-closed boundary.
   try {
     pi.appendEntry(LEDGER_CUSTOM_TYPE, snapshot);
   } catch {
-    appendBlocked("Unable to append the workflow snapshot.");
+    // The host may have committed before throwing. The intent remains
+    // pending and the caller receives a retryable ambiguity, not success.
+    appendAmbiguous("Unable to append the workflow snapshot.");
   }
 
-  let acknowledgedEntryId: string | undefined;
+  let immediateAcknowledgedEntryId: string | undefined;
   try {
-    const newLeaf = sessionManager.getLeafEntry();
-    if (isObject(newLeaf) && isLedgerEntry(newLeaf)) {
-      // Capture every host-controlled property once, inside this boundary.
-      // The return path must not re-read a getter that changed after verify.
+    // Capture the host-controlled leaf through an accessor-free clone. A stale
+    // or ambiguous immediate observation is not authority, but it is also not
+    // enough to conclude that the synchronous append was lost: reconcile the
+    // bounded active branch below.
+    const newLeaf = copyAccessorFreeEntry(sessionManager.getLeafEntry());
+    if (newLeaf && isLedgerEntry(newLeaf)) {
       const leafId = newLeaf.id;
       const leafTimestamp = newLeaf.timestamp;
       const leafParentId = newLeaf.parentId;
@@ -1058,29 +1509,66 @@ function appendWorkflowSnapshotInternal(
         && !branchIds.has(leafId)
         && leafParentId === priorLeafId
         && exactPersistedValue(leafData, snapshot)) {
-        acknowledgedEntryId = leafId;
+        immediateAcknowledgedEntryId = leafId;
       }
     }
   } catch {
-    appendBlocked("Unable to verify the appended active-branch leaf.");
+    // Treat a getter failure or malformed immediate leaf as ambiguous and
+    // allow only the exact active-tail reconciliation path to decide.
+  }
+
+  // Even an exact immediate leaf is only a candidate until it is proven to be
+  // the active tail over the unchanged captured prefix. This prevents a stale
+  // or forged leaf getter from authorizing an off-branch duplicate.
+  let acknowledgedEntryId: string | undefined;
+  try {
+    const reconciledBranch = copyBoundedActiveBranch(sessionManager.getBranch());
+    if (reconciledBranch) {
+      const reconciledEntryId = reconciledTailEntryId(
+        reconciledBranch,
+        branch,
+        priorLeafId,
+        branchIds,
+        snapshot,
+      );
+      if (reconciledEntryId !== undefined
+        && (immediateAcknowledgedEntryId === undefined || immediateAcknowledgedEntryId === reconciledEntryId)) {
+        acknowledgedEntryId = reconciledEntryId;
+      }
+    }
+  } catch {
+    // Fail closed below. No unbounded scan or arbitrary durable-file lookup
+    // is permitted when the bounded active branch cannot be read.
   }
   if (acknowledgedEntryId === undefined) {
-    appendBlocked("Appended leaf does not match the expected custom snapshot or active ancestry.");
+    // appendEntry already ran, so a lost/stale acknowledgement must retain its
+    // exact pending intent for a later explicit operation retry.
+    appendAmbiguous("Appended leaf does not match the expected custom snapshot or active ancestry.");
   }
+  clearPendingIntent(sessionId, canonicalRecord.workItemId, predecessorEntryId);
   return { entryId: acknowledgedEntryId, snapshot };
 }
 
 /** Append a normal current-session snapshot. An inherited cross-session
  * state may only pass when the optional proof is an opaque capability issued
- * by the trusted fork lifecycle; plain metadata objects remain invalid. */
+ * by the trusted fork lifecycle; plain metadata objects remain invalid.
+ * `operationId` is the explicit stable identity of the canonical action; it
+ * is retained only in the bounded process-local pending-intent registry and
+ * never becomes persisted authority by itself. */
 export function appendWorkflowSnapshot(
   pi: LedgerAppender,
   sessionManager: LedgerSessionManager,
   record: WorkflowRecord,
   createdAt: string,
-  proof?: ForkSuccessorProof,
+  proofOrOperationId?: ForkSuccessorProof | string,
+  operationId?: string,
 ): { entryId: string; snapshot: LedgerSnapshot } {
-  return appendWorkflowSnapshotInternal(pi, sessionManager, record, createdAt, proof);
+  // Keep the original proof position source-compatible while allowing direct
+  // current-session callers to supply the explicit identity as the fifth
+  // argument. A string can never be a fork capability.
+  const proof = typeof proofOrOperationId === "string" ? undefined : proofOrOperationId;
+  const stableOperationId = typeof proofOrOperationId === "string" ? proofOrOperationId : operationId;
+  return appendWorkflowSnapshotInternal(pi, sessionManager, record, createdAt, proof, stableOperationId);
 }
 
 /** Consume the one-time capability captured by the trusted fork lifecycle. */

@@ -9,6 +9,7 @@ import { validateScaleAdmission, validateInterfaceEvidenceMatrix, validateInterf
 import { AGENT_NAMES, renderAssignment, validateDelegation, validateHandAdmission, verifyRedTestIdentity, type HandAdmissionBinding } from "./faculties.ts";
 import { inspectionArtifactContextPaths, readInspectionArtifactForContext, verifyInspectionArtifacts as verifyCapturedInspectionArtifacts } from "./inspection-artifacts.ts";
 import { verifyEvidenceArtifacts } from "./evidence.ts";
+import { WorkflowAppendAmbiguousError } from "./session-ledger.ts";
 
 export interface RedTestMonitor extends Disposable {
   /** Optional externally observable sticky state for deterministic hosts. */
@@ -311,10 +312,15 @@ export class GodmodeMode {
         const persisted = this.#deps.persistScaleAdmission!(scaleAdmission!);
         if (persisted.phase !== "scale-running"
           || !persisted.scaleAdmission
-          || persisted.scaleAdmission.admissionId !== scaleAdmission!.admissionId
           || persisted.scaleAdmission.boundRunId !== undefined) {
-          throw new Error("Scale admission persistence did not acknowledge the exact unbound admission.");
+          throw new Error("Scale admission persistence did not acknowledge an exact unbound admission.");
         }
+        // A stale acknowledgement may have committed the first admission
+        // while this call generated a fresh nonce/ID. The trusted callback
+        // returns the adopted persisted admission; bind and review that exact
+        // snapshot rather than allowing the regenerated fields to fork it.
+        scaleAdmission = persisted.scaleAdmission;
+        active.admissionId = scaleAdmission.admissionId;
       }
       const receipt = await this.#deps.client.spawn({
         agent: active.agent,
@@ -326,21 +332,42 @@ export class GodmodeMode {
       if (this.#active !== active) throw new Error("Godmode active slot changed during faculty launch; refusing ambiguous ownership.");
       active.runId = receipt.runId;
       if (normalized.faculty === "scale") {
-        try {
-          const bound = this.#deps.bindScaleAdmission!(scaleAdmission!.admissionId, receipt.runId);
-          if (bound.phase !== "scale-running"
-            || bound.scaleAdmission?.admissionId !== scaleAdmission!.admissionId
-            || bound.scaleAdmission.boundRunId !== receipt.runId) {
+        let bound: WorkflowRecord | undefined;
+        let bindError: unknown;
+        const acknowledgeBinding = (): WorkflowRecord => {
+          const acknowledged = this.#deps.bindScaleAdmission!(scaleAdmission!.admissionId, receipt.runId);
+          if (acknowledged.phase !== "scale-running"
+            || acknowledged.scaleAdmission?.admissionId !== scaleAdmission!.admissionId
+            || acknowledged.scaleAdmission.boundRunId !== receipt.runId) {
             throw new Error("Scale admission bind callback did not acknowledge the exact run binding.");
           }
+          return acknowledged;
+        };
+        try {
+          bound = acknowledgeBinding();
         } catch (error) {
+          bindError = error;
+          if (error instanceof WorkflowAppendAmbiguousError) {
+            // A bind append can be committed while its acknowledgement is
+            // stale. Re-enter the same exact binding operation once before
+            // stopping the child; the ledger adopts the first bound snapshot
+            // and no second generation is written.
+            try {
+              bound = acknowledgeBinding();
+              bindError = undefined;
+            } catch (retryError) {
+              bindError = retryError;
+            }
+          }
+        }
+        if (!bound) {
           try { await this.#deps.client.stop(receipt.runId, "Scale admission binding failed; the unbound run cannot be reviewed."); } catch { /* fail closed below */ }
           this.#finish(active, "failed", {
             kind: "scale-admission-bind-failure",
-            reason: error instanceof Error ? error.message : String(error),
+            reason: bindError instanceof Error ? bindError.message : String(bindError),
           });
           this.#emit();
-          throw error;
+          throw bindError;
         }
       }
       const earlyCompletion = this.#launchCompletions.get(receipt.runId);
@@ -355,7 +382,18 @@ export class GodmodeMode {
       return { runId: receipt.runId, faculty: normalized.faculty, agent: active.agent, state: receipt.state };
     } catch (error) {
       if (this.#active === active) {
-        if (error instanceof AmbiguousRpcOutcomeError) {
+        if (error instanceof WorkflowAppendAmbiguousError) {
+          // No child has been spawned yet. Keep Godmode healthy and release
+          // this launch slot so an exact lifecycle retry can adopt the
+          // append's persisted active-tail snapshot without starting a second
+          // operation. The ledger's pending intent remains authoritative for
+          // deciding whether that retry is exact.
+          this.#disposeHandMonitor();
+          this.#active = undefined;
+          this.#activeHandRedIdentity = undefined;
+          this.#activeHandRedCompromised = false;
+          this.#emit();
+        } else if (error instanceof AmbiguousRpcOutcomeError) {
           // The child may own the slot even though correlation was lost. Keep
           // hand-running and its monitor so a late terminal event cannot be
           // mistaken for an unguarded completion.

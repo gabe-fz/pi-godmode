@@ -8,6 +8,7 @@ import type { GodmodeMode } from "./mode.ts";
 import {
   appendWorkflowSnapshot,
   createCompletionCapsule,
+  createWorkflowOperationIdentity,
   LEDGER_CUSTOM_TYPE,
   reconstructActiveSnapshot,
   type LedgerSessionManager,
@@ -699,22 +700,38 @@ function assertLiveWorkflowAuthority(authority: WorkflowAppendAuthority): void {
 }
 
 /** The append adapter gets the captured prefix for pre-append validation, but
- * only acknowledges a live leaf after proving that prefix survived the append. */
+ * only acknowledges a live leaf after proving that prefix survived the append.
+ * Reconciliation also needs the one-entry-larger live branch: the first branch
+ * read remains the captured pre-append authority, while later reads are a
+ * bounded, prefix-bound view of the host branch. */
 function managerBoundToWorkflowAuthority(authority: WorkflowAppendAuthority): LedgerSessionManager {
+  let branchReads = 0;
   let leafReads = 0;
+  const liveAppendedBranch = (): readonly SessionEntry[] => {
+    try {
+      const branch = copyBoundedWorkflowBranch(authority.manager);
+      const entryCount = branch.length;
+      if (entryCount !== authority.branch.length + 1 || entryCount > MAX_WORKFLOW_BRANCH_ENTRIES) return [];
+      for (let index = 0; index < authority.branch.length; index += 1) {
+        if (!sameWorkflowBranchEntry(branch[index], authority.branch[index])) return [];
+      }
+      return branch;
+    } catch {
+      return [];
+    }
+  };
   return {
     getSessionId: () => authority.sessionId,
-    getBranch: () => authority.branch,
+    getBranch: () => {
+      branchReads += 1;
+      return branchReads === 1 ? authority.branch : liveAppendedBranch();
+    },
     getLeafEntry: () => {
       leafReads += 1;
       if (leafReads === 1) return authority.leaf;
       try {
-        const branch = copyBoundedWorkflowBranch(authority.manager);
-        const entryCount = branch.length;
-        if (entryCount !== authority.branch.length + 1 || entryCount > MAX_WORKFLOW_BRANCH_ENTRIES) return undefined;
-        for (let index = 0; index < authority.branch.length; index += 1) {
-          if (!sameWorkflowBranchEntry(branch[index], authority.branch[index])) return undefined;
-        }
+        const branch = liveAppendedBranch();
+        if (branch.length !== authority.branch.length + 1) return undefined;
         return copyBoundedWorkflowEntry(authority.manager.getLeafEntry());
       } catch {
         return undefined;
@@ -1080,7 +1097,7 @@ export interface WorkflowActionResult {
  * persistence lineage are supplied by this implementation.
  */
 export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerDependencies) {
-  const append = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority): { entryId: string; record: WorkflowRecord } => {
+  const append = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority, operationId?: string): { entryId: string; record: WorkflowRecord } => {
     const manager = authority?.manager ?? deps.getSessionManager();
     if (!manager) throw new Error("Workflow authoring requires an active SessionManager.");
     // appendWorkflowSnapshot performs the exact active-leaf acknowledgement;
@@ -1097,17 +1114,18 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
           deps.pi.appendEntry(customType, data);
         },
       };
-      const persisted = appendWorkflowSnapshot(boundPi, boundManager, record, timestamp);
+      const persisted = appendWorkflowSnapshot(boundPi, boundManager, record, timestamp, undefined, operationId);
       return { entryId: persisted.entryId, record: persisted.snapshot.record };
     }
-    const persisted = appendWorkflowSnapshot(deps.pi, manager, record, timestamp);
+    const persisted = appendWorkflowSnapshot(deps.pi, manager, record, timestamp, undefined, operationId);
     return { entryId: persisted.entryId, record: persisted.snapshot.record };
   };
-  const commit = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority): WorkflowActionResult => {
-    const persisted = append(record, timestamp, authority);
+  const commit = (record: WorkflowRecord, timestamp: string, authority?: WorkflowAppendAuthority, operationId?: string): WorkflowActionResult => {
+    const persisted = append(record, timestamp, authority, operationId);
     deps.setWorkflowRecord(persisted.record);
     return { workItemId: persisted.record.workItemId, phase: persisted.record.phase, entryId: persisted.entryId };
   };
+  const operation = (action: string, input: unknown): string => createWorkflowOperationIdentity(action, input);
 
   const specify = (input: Record<string, unknown>): WorkflowActionResult => {
     assertWorkflowActionFields(input, ["workItemId", "classification", "goal", "requirementIds", "functionalRequirements", "nonGoals", "expectedPaths", "roadmap", "acceptanceChecks", "authorityConstraints"]);
@@ -1221,7 +1239,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       });
     }
     record.nextGate = "red-test-observed-or-tdd-waived";
-    return commit(record, timestamp, appendAuthority);
+    return commit(record, timestamp, appendAuthority, operation("specify", input));
   };
 
   const recordRed = (input: Record<string, unknown>): WorkflowActionResult => {
@@ -1290,7 +1308,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     // Revalidate after attaching the authority-bearing evidence before append.
     const postValidation = validateWorkflowRecord(record);
     if (!postValidation.ok) throw new Error(`Red evidence is malformed: ${postValidation.reason}`);
-    return commit(postValidation.record, observedAt);
+    return commit(postValidation.record, observedAt, undefined, operation("record-red", input));
   };
 
   const waiveTdd = (input: Record<string, unknown>): WorkflowActionResult => {
@@ -1345,7 +1363,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     record.nextGate = "hand-running";
     const postValidation = validateWorkflowRecord(record);
     if (!postValidation.ok) throw new Error(`TDD waiver is malformed: ${postValidation.reason}`);
-    return commit(postValidation.record, timestamp);
+    return commit(postValidation.record, timestamp, undefined, operation("waive-tdd", input));
   };
 
   const recordInspection = (input: Record<string, unknown>): WorkflowActionResult => {
@@ -1478,7 +1496,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     next.nextGate = next.interfaceEvidencePolicy === "interface-matched-v1"
       ? "interface-evidence"
       : "scale-review-or-waiver";
-    const result = commit(next, inspection.inspectedAt);
+    const result = commit(next, inspection.inspectedAt, undefined, operation("record-inspection", input));
     if (current.primaryInspection !== undefined) cleanupInspectionArtifacts(current.primaryInspection);
     if (previousMatrixArtifacts.length > 0) cleanupEvidenceArtifacts(previousMatrixArtifacts);
     return result;
@@ -1602,7 +1620,7 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       const matrixValidation = validateInterfaceEvidenceMatrixDetailed(next, { requirePassing: false });
       if (!matrixValidation.ok) throw new Error(`Interface evidence matrix is incomplete or invalid: ${matrixValidation.reason ?? "unknown matrix error"}`);
       next.nextGate = validateInterfaceEvidenceMatrix(next) ? "scale-review-or-waiver" : "interface-evidence";
-      const result = commit(next, timestamp);
+      const result = commit(next, timestamp, undefined, operation("record-evidence", input));
       // The old artifacts are no longer active only after append acknowledgement
       // succeeds. If append fails, the previous current snapshot remains intact.
       if (previousMatrixArtifacts.length > 0) cleanupEvidenceArtifacts(previousMatrixArtifacts);
@@ -1726,7 +1744,13 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       });
       next.nextGate = "hand-correction";
     }
-    return commit(next, completedAt);
+    return commit(next, completedAt, undefined, operation("record-scale-review", {
+      input,
+      admissionId: admission.admissionId,
+      runId: latest.runId,
+      inspectionId: current.primaryInspection.id,
+      diffFingerprint: current.primaryInspection.diffFingerprint,
+    }));
   };
 
   const waiveScale = (input: Record<string, unknown>): WorkflowActionResult => {
@@ -1802,7 +1826,19 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
       reason: "Primary recorded a narrow compensated Scale waiver without bypassing inspection.", reference: `decision:${waiver.id}`,
     });
     next.nextGate = "primary-acceptance";
-    return commit(next, timestamp);
+    return commit(next, timestamp, undefined, operation("waive-scale", {
+      input,
+      // A strict policy file is trusted input to this lifecycle action. Bind
+      // retries to its content identity without including regenerated audit
+      // timestamps from the waiver record.
+      policyHash: typeof waiver.policyReference === "object" && waiver.policyReference !== null
+        ? waiver.policyReference.sha256
+        : undefined,
+      policyBytes: typeof waiver.policyReference === "object" && waiver.policyReference !== null
+        ? waiver.policyReference.bytes
+        : undefined,
+      userMessageEntryId: waiver.userMessageEntryId,
+    }));
   };
 
   const accept = (input: Record<string, unknown>): WorkflowActionResult => {
@@ -1846,7 +1882,13 @@ export function createPrimaryWorkflowController(deps: PrimaryWorkflowControllerD
     };
     const capsuleValidation = validateWorkflowRecord(acceptedWithCapsule);
     if (!capsuleValidation.ok) throw new Error(`Acceptance completion capsule is malformed: ${capsuleValidation.reason}`);
-    const result = commit(capsuleValidation.record, timestamp);
+    const result = commit(capsuleValidation.record, timestamp, undefined, operation("accept", {
+      workItemId: current.workItemId,
+      reason,
+      inspectionId: current.primaryInspection.id,
+      scaleReviewId: current.scaleReview?.id,
+      scaleWaiverId: current.scaleWaiver?.id,
+    }));
     cleanupInspectionArtifacts(current.primaryInspection);
     if (matrixArtifacts.length > 0) cleanupEvidenceArtifacts(matrixArtifacts);
     return result;
