@@ -40,7 +40,7 @@ test("workflow lifecycle registration binds every session boundary behaviorally"
   assert.deepEqual(events, ["session_start", "session_before_fork", "session_tree", "session_shutdown"]);
 });
 
-test("session initialization enables Godmode by default after establishing the baseline", async () => {
+test("session initialization leaves Godmode off after establishing the baseline", async () => {
   const events: string[] = [];
   let phase: GodmodeSnapshot["phase"] = "off";
   let activeTools = ["read", "subagent", "subagent_wait", "godmode_delegate", "godmode_control"];
@@ -62,12 +62,12 @@ test("session initialization enables Godmode by default after establishing the b
 
   await initializeGodmodeSession(mode, pi, ctx);
 
-  assert.equal(phase, "active");
+  assert.equal(phase, "off");
   assert.deepEqual(activeTools, ["read", "subagent", "subagent_wait"]);
-  assert.deepEqual(events, ["get-tools", "set-tools", "status:godmode:clear", "enable"]);
+  assert.deepEqual(events, ["get-tools", "set-tools", "status:godmode:clear"]);
 });
 
-test("session initialization establishes the baseline before default-on enable and reports startup failure", async () => {
+test("session initialization does not attempt enable or require configured models", async () => {
   const events: string[] = [];
   const notifications: Array<{ message: string; type?: string }> = [];
   let activeTools = ["read", "subagent", "subagent_wait", "godmode_delegate", "godmode_control"];
@@ -98,13 +98,9 @@ test("session initialization establishes the baseline before default-on enable a
 
   await initializeGodmodeSession(mode, pi, ctx);
 
-  assert.deepEqual(events.slice(0, 4), ["get-tools", "set-tools", "status:godmode:clear", "enable"]);
+  assert.deepEqual(events, ["get-tools", "set-tools", "status:godmode:clear"]);
   assert.deepEqual(activeTools, ["read", "subagent", "subagent_wait"]);
-  assert.equal(notifications.length, 1);
-  assert.equal(notifications[0]?.type, "error");
-  assert.match(notifications[0]?.message ?? "", /startup enable failed/);
-  assert.match(notifications[0]?.message ?? "", /remains off/);
-  assert.match(notifications[0]?.message ?? "", /run \/godmode to retry/);
+  assert.equal(notifications.length, 0);
 });
 
 test("session initialization contains baseline host failures and reports them", async () => {

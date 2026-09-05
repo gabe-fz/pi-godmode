@@ -25,12 +25,12 @@ export async function initializeGodmodeSession(
       if (ctx.hasUI) ctx.ui.setStatus("godmode", undefined);
     }
 
-    await mode.enable();
+    // Godmode is opt-in: only the explicit TUI /godmode toggle enables it.
   } catch (error) {
     if (ctx.hasUI) {
       const detail = error instanceof Error ? error.message : String(error);
       try {
-        ctx.ui.notify(`Godmode startup enable failed: ${detail}. Godmode remains off; fix the issue and run /godmode to retry.`, "error");
+        ctx.ui.notify(`Godmode startup initialization failed: ${detail}. Fix the issue and reload Pi; use /godmode to enable explicitly.`, "error");
       } catch { /* startup must continue even if the UI cannot report the failure */ }
     }
   }

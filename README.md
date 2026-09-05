@@ -1,6 +1,6 @@
 # pi-godmode
 
-Default-on, single-faculty orchestration for [Pi](https://github.com/earendil-works/pi-mono), built on the documented public APIs of [`pi-subagents`](https://github.com/nicobailon/pi-subagents).
+Opt-in, single-faculty orchestration for [Pi](https://github.com/earendil-works/pi-mono), built on the documented public APIs of [`pi-subagents`](https://github.com/nicobailon/pi-subagents).
 
 Godmode exposes three constrained faculties:
 
@@ -53,7 +53,7 @@ Provider/model tuples are exact; there is no inferred fallback. Faculty tuples c
 
 ## Use today
 
-There is one Godmode command. In the TUI, bare `/godmode` toggles the mode; outside the TUI it reports bounded state without mutating the mode. Startup attempts transactional default-on enablement after the ordinary tool baseline is initialized. A failure leaves the session running with Godmode off and reports how to retry.
+There is one Godmode command. In the TUI, bare `/godmode` toggles the mode; outside the TUI it reports bounded state without mutating the mode. Sessions start with Godmode off and retain the current model and thinking level. Run `/godmode` explicitly to enable it; enable failures roll back and report the issue.
 
 While enabled, arbitrary `subagent` and `subagent_wait` surfaces are replaced by `godmode_delegate`, `godmode_workflow`, `godmode_doctor`, and `godmode_control`. Only one faculty may be active. Eye and Scale are read-only; Hand is the only mutation-capable faculty, and Primary mutation is guarded while Hand owns the shared checkout. Faculty runs complete asynchronously through pi-subagents. A handoff is evidence, not acceptance.
 

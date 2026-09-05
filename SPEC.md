@@ -6,7 +6,7 @@
 
 ## 1. Summary
 
-Pi Godmode is a default-on orchestration mode for Pi. At every session start, after the ordinary tool baseline is initialized, the current interactive session automatically attempts to become active on a configured high-tier model. The session retains responsibility for understanding requests, planning, decisions, user interaction, review, validation, and final acceptance.
+Pi Godmode is an opt-in orchestration mode for Pi. At every session start the ordinary tool baseline is initialized, Godmode remains off, and the current model and thinking level are preserved. The user explicitly enables it with `/godmode` in the TUI. The session retains responsibility for understanding requests, planning, decisions, user interaction, review, validation, and final acceptance.
 
 The primary session delegates bounded execution through three specialized **Divine Faculties** backed by `pi-subagents`:
 
@@ -66,7 +66,7 @@ Godmode will not implement:
 
 | Term | Meaning |
 | --- | --- |
-| **Godmode** | The session-local mode defined by this package; it defaults active after session startup succeeds. |
+| **Godmode** | The session-local mode defined by this package; it defaults off and requires explicit TUI enablement. |
 | **Primary** | The interactive, high-tier Pi session that owns decisions and acceptance. |
 | **Primary-authored** | Authority-bearing workflow content written by the Primary; durable ledger/evidence records use `Primary`. |
 | **Divine Faculty** | One configured `pi-subagents` child role available through Godmode. |
@@ -112,7 +112,7 @@ Godmode registers exactly one user-facing slash command:
 
 The current runtime keeps one command with an exact parser: empty arguments toggle, `doctor` runs bounded read-only diagnosis, `doctor --apply` returns a preview/token without writing, exact `--replace` returns a one-target replacement preview, and only tokenized `--confirm`/`--recover` can mutate or restore. Unknown arguments fail with usage guidance and never silently toggle or apply changes. Doctor is available regardless of trust or active-mode state; apply requires a trusted idle project with no active faculty. The diagnostic/apply contract is defined in section 22 and [`docs/DOCTOR.md`](./docs/DOCTOR.md).
 
-At every `session_start`, Godmode first restores the ordinary active-tool baseline and then attempts transactional enablement. If startup enablement fails, the mode rolls back to off, session startup continues, and the UI receives an actionable error notification; after fixing the reported issue, run `/godmode` to retry.
+At every `session_start`, Godmode establishes the ordinary active-tool baseline without attempting enablement or changing the selected model/thinking level. Baseline initialization failures do not abort session startup and are reported when UI is available. Run `/godmode` explicitly to enable; manual enablement remains transactional.
 
 In interactive TUI mode, bare `/godmode` directly toggles: off enables Godmode, while active or degraded disables it. Disabling never silently leaves an assignment running. When a faculty is active, the direct toggle-off uses the explicit stop-and-disable cleanup path and waits for terminal package status before restoring the previous Primary state.
 
@@ -654,9 +654,9 @@ Exit: Eye, Hand, and Scale operate through the complete Godmode workflow with de
 
 The first stable release is ready when:
 
-1. `/godmode` is the only Godmode slash command; each session starts by attempting default-on enablement after the ordinary tool baseline is initialized, and TUI `/godmode` directly toggles.
-2. Startup or manual enablement selects an explicitly configured high-tier model/thinking level and disabling restores the prior state.
-3. Enable fails transactionally when trust, configuration, models, authentication, faculty preflight, or required `pi-subagents` capabilities are unavailable; startup failure leaves the session running in off state and shows an actionable UI notification when available.
+1. `/godmode` is the only Godmode slash command; each session starts off after the ordinary tool baseline is initialized, and TUI `/godmode` directly toggles.
+2. Explicit manual enablement selects an explicitly configured high-tier model/thinking level and disabling restores the prior state.
+3. Enable fails transactionally when trust, configuration, models, authentication, faculty preflight, or required `pi-subagents` capabilities are unavailable; manual enablement failure leaves the session running in off state and shows an actionable UI notification when available.
 4. The Primary can launch only Eye, Hand, or Scale through the Godmode model-facing API.
 5. Oracle, arbitrary agents, workflow scripts, nested delegation, schedules, worktrees, arbitrary cwd, and model/tool overrides are absent from that API.
 6. A session-scoped capability ceiling independently enforces the faculty and tool boundary.
